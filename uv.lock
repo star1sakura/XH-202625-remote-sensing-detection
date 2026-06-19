@@ -290,6 +290,15 @@ wheels = [
 ]
 
 [[package]]
+name = "editables"
+version = "0.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/01/b0/a2a87db4b6cb8e7d57004b6836faa634e0747e3e39ded126cdbe5a33ba36/editables-0.3.tar.gz", hash = "sha256:167524e377358ed1f1374e61c268f0d7a4bf7dbd046c656f7b410cde16161b1a", size = 4668, upload-time = "2022-04-10T15:35:32.237Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ef/8c/87276afb1ba3193c4c05be83965a1e69b8a14821ce6d688464071b179383/editables-0.3-py3-none-any.whl", hash = "sha256:ee686a8db9f5d91da39849f175ffeef094dd0e9c36d6a59a2e8c7f92a3b80020", size = 4689, upload-time = "2022-04-10T15:35:29.912Z" },
+]
+
+[[package]]
 name = "fastapi"
 version = "0.137.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1665,6 +1674,7 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "editables" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
@@ -1672,6 +1682,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "editables", marker = "extra == 'dev'", specifier = ">=0.3,<0.4" },
     { name = "gradio", specifier = "==6.19.0" },
     { name = "numpy", specifier = ">=1.26,<3" },
     { name = "opencv-python", specifier = ">=4.10,<5" },
