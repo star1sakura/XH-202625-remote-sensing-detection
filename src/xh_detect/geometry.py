@@ -1,12 +1,22 @@
 from __future__ import annotations
 
+import math
 from typing import cast
 
+from shapely.errors import GEOSException
 from shapely.geometry import Polygon
 
 from xh_detect.types import Polygon4
 
 HBB = tuple[float, float, float, float]
+
+
+def _normalize_hbb(box: HBB) -> HBB:
+    xmin = min(box[0], box[2])
+    ymin = min(box[1], box[3])
+    xmax = max(box[0], box[2])
+    ymax = max(box[1], box[3])
+    return xmin, ymin, xmax, ymax
 
 
 def obb_to_hbb(polygon: Polygon4) -> HBB:
@@ -25,6 +35,8 @@ def clip_polygon(polygon: Polygon4, width: int, height: int) -> Polygon4:
 
 
 def hbb_iou(left: HBB, right: HBB) -> float:
+    left = _normalize_hbb(left)
+    right = _normalize_hbb(right)
     ix1 = max(left[0], right[0])
     iy1 = max(left[1], right[1])
     ix2 = min(left[2], right[2])
@@ -37,7 +49,14 @@ def hbb_iou(left: HBB, right: HBB) -> float:
 
 
 def _polygon_or_none(polygon: Polygon4) -> Polygon | None:
-    shape = Polygon(polygon)
+    if not all(math.isfinite(coord) for point in polygon for coord in point):
+        return None
+
+    try:
+        shape = Polygon(polygon)
+    except GEOSException:
+        return None
+
     if not shape.is_valid or shape.is_empty or shape.area <= 0:
         return None
     return shape
@@ -49,7 +68,12 @@ def polygon_iou(left: Polygon4, right: Polygon4) -> float:
     if left_shape is None or right_shape is None:
         return 0.0
 
-    union = left_shape.union(right_shape).area
-    if union <= 0:
+    try:
+        union = left_shape.union(right_shape).area
+        if union <= 0:
+            return 0.0
+        intersection = left_shape.intersection(right_shape).area
+    except GEOSException:
         return 0.0
-    return left_shape.intersection(right_shape).area / union
+
+    return intersection / union

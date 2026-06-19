@@ -1,3 +1,5 @@
+import math
+
 import pytest
 
 from xh_detect.geometry import clip_polygon, hbb_iou, obb_to_hbb, polygon_iou
@@ -28,8 +30,21 @@ def test_hbb_iou_partial_overlap() -> None:
     assert hbb_iou((0.0, 0.0, 10.0, 10.0), (5.0, 0.0, 15.0, 10.0)) == pytest.approx(1 / 3)
 
 
+def test_hbb_iou_normalizes_reversed_coordinates() -> None:
+    forward = (0.0, 0.0, 10.0, 10.0)
+    reversed_box = (10.0, 10.0, 0.0, 0.0)
+
+    assert hbb_iou(forward, reversed_box) == pytest.approx(1.0)
+
+
 def test_hbb_iou_zero_area_returns_zero() -> None:
     assert hbb_iou((0.0, 0.0, 0.0, 10.0), (0.0, 0.0, 10.0, 10.0)) == 0.0
+
+
+def test_polygon_iou_non_finite_coordinates_returns_zero() -> None:
+    nan_polygon = ((math.nan, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0))
+
+    assert polygon_iou(nan_polygon, SQUARE) == 0.0
 
 
 @pytest.mark.parametrize("width,height", [(0, 16), (16, 0), (-1, 16), (16, -1)])
