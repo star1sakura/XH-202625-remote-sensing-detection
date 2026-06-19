@@ -20,8 +20,43 @@ def test_pipeline_config_defaults_match_expected_values() -> None:
     assert config.class_thresholds == {0: 0.25, 1: 0.25, 2: 0.25}
 
 
-def test_baseline_yaml_loads_expected_pipeline_values() -> None:
-    config = PipelineConfig.from_yaml(Path("configs/baseline.yaml"))
+def test_class_thresholds_are_immutable_and_copy_on_construct() -> None:
+    source_thresholds = {0: 0.4, 1: 0.3, 2: 0.2}
+    config = PipelineConfig(class_thresholds=source_thresholds)
+
+    source_thresholds[0] = 0.9
+
+    assert config.class_thresholds == {0: 0.4, 1: 0.3, 2: 0.2}
+    assert min(config.class_thresholds.values()) == 0.2
+
+    with pytest.raises(TypeError):
+        config.class_thresholds[0] = 0.9
+
+
+def test_pipeline_config_to_dict_returns_serializable_primitives() -> None:
+    config = PipelineConfig()
+
+    assert config.to_dict() == {
+        "model_path": "yolo26s-obb.pt",
+        "device": "0",
+        "image_size": 1024,
+        "tile_size": 1024,
+        "overlap": 0.2,
+        "batch_size": 8,
+        "merge_iou": 0.3,
+        "edge_margin": 16,
+        "half": True,
+        "class_thresholds": {0: 0.25, 1: 0.25, 2: 0.25},
+    }
+
+
+def test_baseline_yaml_loads_expected_pipeline_values(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    baseline_path = Path(__file__).resolve().parents[1] / "configs" / "baseline.yaml"
+
+    config = PipelineConfig.from_yaml(baseline_path)
 
     assert config.model_path == "yolo26s-obb.pt"
     assert config.tile_size == 1024
@@ -69,6 +104,22 @@ def test_from_yaml_rejects_non_mapping_root(tmp_path: Path) -> None:
     path.write_text("- not\n- a mapping\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="root"):
+        PipelineConfig.from_yaml(path)
+
+
+def test_from_yaml_rejects_unknown_configuration_keys(tmp_path: Path) -> None:
+    path = tmp_path / "extra-key.yaml"
+    path.write_text(
+        "model_path: yolo26s-obb.pt\n"
+        "class_thresholds:\n"
+        "  0: 0.25\n"
+        "  1: 0.25\n"
+        "  2: 0.25\n"
+        "unexpected: true\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="unknown configuration keys"):
         PipelineConfig.from_yaml(path)
 
 

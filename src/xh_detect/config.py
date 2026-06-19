@@ -1,6 +1,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 
 import yaml
 
@@ -20,9 +21,11 @@ class PipelineConfig:
     merge_iou: float = 0.3
     edge_margin: int = 16
     half: bool = True
-    class_thresholds: dict[int, float] = field(default_factory=_default_class_thresholds)
+    class_thresholds: Mapping[int, float] = field(default_factory=_default_class_thresholds)
 
     def __post_init__(self) -> None:
+        class_thresholds = dict(self.class_thresholds)
+
         if self.image_size <= 0:
             raise ValueError("image_size must be positive")
         if self.tile_size <= 0:
@@ -35,11 +38,26 @@ class PipelineConfig:
             raise ValueError("merge_iou must be in [0, 1]")
         if self.edge_margin < 0:
             raise ValueError("edge_margin must be non-negative")
-        if set(self.class_thresholds) != {0, 1, 2}:
+        if set(class_thresholds) != {0, 1, 2}:
             raise ValueError("class_thresholds must define class IDs 0, 1, and 2")
-        for class_id, threshold in self.class_thresholds.items():
+        for class_id, threshold in class_thresholds.items():
             if not 0 <= threshold <= 1:
                 raise ValueError(f"threshold for class {class_id} must be in [0, 1]")
+        object.__setattr__(self, "class_thresholds", MappingProxyType(class_thresholds))
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "model_path": self.model_path,
+            "device": self.device,
+            "image_size": self.image_size,
+            "tile_size": self.tile_size,
+            "overlap": self.overlap,
+            "batch_size": self.batch_size,
+            "merge_iou": self.merge_iou,
+            "edge_margin": self.edge_margin,
+            "half": self.half,
+            "class_thresholds": dict(self.class_thresholds),
+        }
 
     @classmethod
     def from_yaml(cls, path: Path | str) -> "PipelineConfig":
@@ -52,6 +70,23 @@ class PipelineConfig:
         class_thresholds = raw_mapping.pop("class_thresholds", None)
         if not isinstance(class_thresholds, Mapping):
             raise ValueError("class_thresholds must be a mapping")
+
+        valid_keys = {
+            "model_path",
+            "device",
+            "image_size",
+            "tile_size",
+            "overlap",
+            "batch_size",
+            "merge_iou",
+            "edge_margin",
+            "half",
+            "class_thresholds",
+        }
+        unknown_keys = sorted(key for key in raw_mapping if key not in valid_keys)
+        if unknown_keys:
+            joined_keys = ", ".join(unknown_keys)
+            raise ValueError(f"unknown configuration keys: {joined_keys}")
 
         raw_mapping["class_thresholds"] = {
             int(class_id): float(threshold) for class_id, threshold in class_thresholds.items()
