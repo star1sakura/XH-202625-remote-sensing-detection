@@ -3,7 +3,7 @@ device: "0"
 image_size: 1024
 tile_size: 1024
 overlap: 0.2
-batch: 8
+batch_size: 8
 merge_iou: 0.3
 edge_margin: 16
 half: true
