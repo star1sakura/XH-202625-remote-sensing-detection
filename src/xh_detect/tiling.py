@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import math
-import warnings
 from collections.abc import Iterator
-from numbers import Integral, Number, Real
+from numbers import Integral, Real
 from typing import cast
 
 import numpy as np
 
 from xh_detect.types import ImageArray, Tile, TileMeta
+
+SUPPORTED_IMAGE_DTYPES = (
+    np.uint8,
+    np.uint16,
+    np.int16,
+    np.float32,
+    np.float64,
+)
 
 
 def _validate_int(name: str, value: object, *, minimum: int | None = None) -> int:
@@ -58,62 +65,54 @@ def _validate_image(image: object) -> ImageArray:
         raise ValueError("image height and width must be positive")
     if array.ndim == 3 and array.shape[2] <= 0:
         raise ValueError("image channel dimension must be positive")
-    if not np.issubdtype(array.dtype, np.number):
-        raise TypeError("image dtype must be numeric")
+    if array.dtype.type not in SUPPORTED_IMAGE_DTYPES:
+        raise TypeError(
+            "image dtype must be one of uint8, uint16, int16, float32, or float64"
+        )
     return cast(ImageArray, array)
 
 
-def _real_values_match(original: object, converted: object) -> bool:
-    original_value = original.item() if isinstance(original, np.generic) else original
-    converted_value = (
-        converted.item() if isinstance(converted, np.generic) else converted
-    )
-    if isinstance(original_value, (float, np.floating)):
-        if np.isnan(original_value):
-            return bool(np.isnan(converted_value))
-        if np.isinf(original_value):
-            return bool(
-                np.isinf(converted_value)
-                and np.signbit(original_value) == np.signbit(converted_value)
-            )
-    return bool(converted_value == original_value)
-
-
-def _pad_value_matches_dtype(pad_value: object, converted: np.generic) -> bool:
-    if np.iscomplexobj(converted):
-        if np.iscomplexobj(pad_value):
-            original_real = pad_value.real
-            original_imag = pad_value.imag
-        else:
-            original_real = pad_value
-            original_imag = 0
-        return _real_values_match(
-            original_real, converted.real
-        ) and _real_values_match(original_imag, converted.imag)
-    return _real_values_match(pad_value, converted)
+def _is_finite_real(value: Real) -> bool:
+    if isinstance(value, Integral):
+        return True
+    if isinstance(value, np.floating):
+        return bool(np.isfinite(value))
+    return math.isfinite(value)
 
 
 def _validate_pad_value(pad_value: object, dtype: np.dtype) -> np.generic:
     if not np.isscalar(pad_value):
         raise TypeError("pad_value must be a scalar")
-    if not isinstance(pad_value, (Number, np.number, np.bool_)):
-        raise TypeError("pad_value must be a numeric scalar")
-    if np.iscomplexobj(pad_value) and not np.issubdtype(dtype, np.complexfloating):
-        raise ValueError(f"pad_value must be losslessly representable by image dtype {dtype}")
+    if isinstance(pad_value, (bool, np.bool_)) or not isinstance(pad_value, Real):
+        raise TypeError("pad_value must be a non-boolean real numeric scalar")
 
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)
-            converted = dtype.type(pad_value)
-    except (OverflowError, TypeError, ValueError) as exc:
-        raise ValueError(
-            f"pad_value must be losslessly representable by image dtype {dtype}"
-        ) from exc
+    if np.issubdtype(dtype, np.integer):
+        if isinstance(pad_value, Integral):
+            integer_value = int(pad_value)
+        else:
+            float_value = float(pad_value)
+            if not math.isfinite(float_value) or not float_value.is_integer():
+                raise ValueError(
+                    "pad_value must be a finite integer for integer image dtype"
+                )
+            integer_value = int(float_value)
 
-    if not _pad_value_matches_dtype(pad_value, converted):
+        limits = np.iinfo(dtype)
+        if integer_value < limits.min or integer_value > limits.max:
+            raise ValueError(f"pad_value is outside the range of image dtype {dtype}")
+        return dtype.type(integer_value)
+
+    is_finite = _is_finite_real(pad_value)
+    if is_finite and abs(pad_value) > np.finfo(dtype).max:
         raise ValueError(
-            f"pad_value must be losslessly representable by image dtype {dtype}"
+            f"pad_value overflows finite range of image dtype {dtype}"
         )
+    try:
+        converted = dtype.type(pad_value)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise ValueError(f"pad_value cannot be converted to image dtype {dtype}") from exc
+    if is_finite and not np.isfinite(converted):
+        raise ValueError(f"pad_value overflows finite range of image dtype {dtype}")
     return converted
 
 
