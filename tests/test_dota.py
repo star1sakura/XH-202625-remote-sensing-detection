@@ -106,6 +106,34 @@ def test_convert_split_counts_only_malformed_mapped_target_lines(tmp_path: Path)
     assert (output_root / "labels" / "train" / "P0003.txt").read_text(encoding="utf-8") == ""
 
 
+@pytest.mark.parametrize(
+    ("line", "expected_invalid_lines"),
+    [
+        ("10 10 30 10 30 30 10 30 plane junk 0", 1),
+        ("10 10 30 10 30 30 10 30 plane 0 extra", 1),
+        ("10 10 30 10 30 30 10 30 small vehicle junk 0", 1),
+        ("10 10 30 10 30 30 10 30 harbor junk 0", 0),
+    ],
+)
+def test_convert_split_rejects_mapped_targets_with_extra_trailing_tokens(
+    tmp_path: Path,
+    line: str,
+    expected_invalid_lines: int,
+) -> None:
+    images_dir = tmp_path / "images"
+    labels_dir = tmp_path / "labels"
+    output_root = tmp_path / "converted"
+    images_dir.mkdir()
+    labels_dir.mkdir()
+    Image.new("RGB", (100, 100), color="black").save(images_dir / "P0012.png")
+    (labels_dir / "P0012.txt").write_text(f"{line}\n", encoding="utf-8")
+
+    stats = convert_split(images_dir, labels_dir, output_root, split="train")
+
+    assert stats.invalid_lines == expected_invalid_lines
+    assert (output_root / "labels" / "train" / "P0012.txt").read_text(encoding="utf-8") == ""
+
+
 def test_convert_split_rejects_invalid_difficult_tokens_for_mapped_targets(
     tmp_path: Path,
 ) -> None:

@@ -24,6 +24,14 @@ CLASS_MAP = {
     "large vehicle": 2,
 }
 
+CLASS_TOKEN_PATTERNS = tuple(
+    sorted(
+        ((tuple(class_name.split()), class_id) for class_name, class_id in CLASS_MAP.items()),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    )
+)
+
 VALID_SPLITS = {"train", "val", "test"}
 
 
@@ -54,56 +62,42 @@ def _parse_label_file(path: Path, image_id: str) -> tuple[tuple[ObjectAnnotation
             continue
 
         class_tokens = [token.lower() for token in parts[8:]]
-        matched_class_name: str | None = None
-        class_id = 0
+        class_id: int | None = None
         difficult_token: str | None = None
-        invalid_target = False
-        for candidate_name, candidate_class_id in sorted(
-            CLASS_MAP.items(),
-            key=lambda item: len(item[0].split()),
-            reverse=True,
-        ):
-            candidate_tokens = candidate_name.split()
-            if class_tokens[: len(candidate_tokens)] != candidate_tokens:
+        for candidate_tokens, candidate_class_id in CLASS_TOKEN_PATTERNS:
+            if tuple(class_tokens[: len(candidate_tokens)]) != candidate_tokens:
                 continue
-            if len(class_tokens) == len(candidate_tokens) + 1:
-                matched_class_name = candidate_name
-                class_id = candidate_class_id
-                difficult_token = parts[8 + len(candidate_tokens)]
+            class_id = candidate_class_id
+            remainder = class_tokens[len(candidate_tokens) :]
+            if len(remainder) != 1:
+                invalid_lines += 1
                 break
-            if len(class_tokens) == len(candidate_tokens):
-                invalid_target = True
-                matched_class_name = candidate_name
-                class_id = candidate_class_id
+            difficult_token = remainder[0]
+            if difficult_token not in {"0", "1"}:
+                invalid_lines += 1
                 break
-
-        if matched_class_name is None:
-            continue
-        if invalid_target:
-            invalid_lines += 1
-            continue
-        if difficult_token not in {"0", "1"}:
-            invalid_lines += 1
-            continue
-        try:
-            coordinates = [float(value) for value in parts[:8]]
-        except ValueError:
-            invalid_lines += 1
-            continue
-        polygon: Polygon4 = (
-            (coordinates[0], coordinates[1]),
-            (coordinates[2], coordinates[3]),
-            (coordinates[4], coordinates[5]),
-            (coordinates[6], coordinates[7]),
-        )
-        annotations.append(
-            ObjectAnnotation(
-                image_id=image_id,
-                class_id=class_id,
-                polygon=polygon,
-                difficult=difficult_token == "1",
+            try:
+                coordinates = [float(value) for value in parts[:8]]
+            except ValueError:
+                invalid_lines += 1
+                break
+            polygon: Polygon4 = (
+                (coordinates[0], coordinates[1]),
+                (coordinates[2], coordinates[3]),
+                (coordinates[4], coordinates[5]),
+                (coordinates[6], coordinates[7]),
             )
-        )
+            annotations.append(
+                ObjectAnnotation(
+                    image_id=image_id,
+                    class_id=class_id,
+                    polygon=polygon,
+                    difficult=difficult_token == "1",
+                )
+            )
+            break
+        else:
+            continue
     return tuple(annotations), invalid_lines
 
 
