@@ -1,0 +1,344 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from xh_detect.config import PipelineConfig
+from xh_detect.types import BoxPrediction
+
+
+def _prediction(
+    class_id: int = 0,
+    score: float = 0.9,
+    polygon: tuple[tuple[float, float], ...] = (
+        (1.0, 1.0),
+        (3.0, 1.0),
+        (3.0, 3.0),
+        (1.0, 3.0),
+    ),
+) -> BoxPrediction:
+    return BoxPrediction(class_id=class_id, score=score, polygon=polygon)  # type: ignore[arg-type]
+
+
+class RecordingDetector:
+    def __init__(self, outputs: list[list[BoxPrediction]]) -> None:
+        self.outputs = outputs
+        self.calls: list[dict[str, object]] = []
+
+    def predict(
+        self, images: list[np.ndarray], confidence: float
+    ) -> list[list[BoxPrediction]]:
+        self.calls.append(
+            {
+                "count": len(images),
+                "confidence": confidence,
+                "shapes": [image.shape for image in images],
+            }
+        )
+        return self.outputs[: len(images)]
+
+
+class PixelDrivenDetector:
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, float]] = []
+
+    def predict(
+        self, images: list[np.ndarray], confidence: float
+    ) -> list[list[BoxPrediction]]:
+        self.calls.append((len(images), confidence))
+        results: list[list[BoxPrediction]] = []
+        for image in images:
+            class_id = int(image[0, 0, 0] % 3)
+            results.append([_prediction(class_id=class_id, score=0.95)])
+        return results
+
+
+class FailingDetector:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def predict(
+        self, images: list[np.ndarray], confidence: float
+    ) -> list[list[BoxPrediction]]:
+        self.calls += 1
+        raise RuntimeError("detector failed")
+
+
+def test_inference_pipeline_runs_single_tile_and_reports_timings() -> None:
+    from xh_detect.pipeline import InferencePipeline
+
+    config = PipelineConfig(tile_size=4, overlap=0.0, batch_size=2, edge_margin=0)
+    detector = RecordingDetector([[_prediction(class_id=2, score=0.9)]])
+    pipeline = InferencePipeline(detector=detector, config=config)
+    image = np.zeros((4, 4, 3), dtype=np.uint8)
+
+    detections, timings = pipeline.run(image, "scene-1")
+
+    assert len(detections) == 1
+    assert detections[0].image_id == "scene-1"
+    assert detections[0].class_id == 2
+    assert detections[0].score == 0.9
+    assert detections[0].polygon == ((1.0, 1.0), (3.0, 1.0), (3.0, 3.0), (1.0, 3.0))
+    assert detector.calls == [{"count": 1, "confidence": 0.25, "shapes": [(4, 4, 3)]}]
+    assert timings.preprocess_s >= 0.0
+    assert timings.inference_s >= 0.0
+    assert timings.postprocess_s >= 0.0
+    assert timings.total_s + 1e-9 >= (
+        timings.preprocess_s + timings.inference_s + timings.postprocess_s
+    )
+
+
+def test_inference_pipeline_merges_cross_tile_duplicates_in_stable_order() -> None:
+    from xh_detect.pipeline import InferencePipeline
+
+    config = PipelineConfig(tile_size=4, overlap=0.5, batch_size=8, edge_margin=0)
+    detector = RecordingDetector(
+        [
+            [
+                _prediction(
+                    class_id=1,
+                    score=0.9,
+                    polygon=((2.0, 1.0), (4.0, 1.0), (4.0, 3.0), (2.0, 3.0)),
+                )
+            ],
+            [
+                _prediction(
+                    class_id=1,
+                    score=0.8,
+                    polygon=((0.0, 1.0), (2.0, 1.0), (2.0, 3.0), (0.0, 3.0)),
+                )
+            ],
+        ]
+    )
+    pipeline = InferencePipeline(detector=detector, config=config)
+    image = np.zeros((4, 6, 3), dtype=np.uint8)
+
+    detections, _ = pipeline.run(image, "scene-merge")
+
+    assert [(item.class_id, item.score, item.polygon) for item in detections] == [
+        (1, 0.9, ((2.0, 1.0), (4.0, 1.0), (4.0, 3.0), (2.0, 3.0)))
+    ]
+
+
+def test_inference_pipeline_filters_by_per_class_thresholds_and_unknown_classes() -> None:
+    from xh_detect.pipeline import InferencePipeline
+
+    config = PipelineConfig(
+        tile_size=4,
+        overlap=0.0,
+        batch_size=4,
+        edge_margin=0,
+        class_thresholds={0: 0.4, 1: 0.6, 2: 0.8},
+    )
+    detector = RecordingDetector(
+        [
+            [
+                _prediction(class_id=0, score=0.39),
+                _prediction(class_id=1, score=0.6),
+                _prediction(class_id=2, score=0.79),
+                _prediction(class_id=99, score=0.99),
+            ]
+        ]
+    )
+    pipeline = InferencePipeline(detector=detector, config=config)
+
+    detections, _ = pipeline.run(np.zeros((4, 4, 3), dtype=np.uint8), "threshold-scene")
+
+    assert [(item.class_id, item.score) for item in detections] == [(1, 0.6)]
+    assert detector.calls[0]["confidence"] == 0.4
+
+
+def test_inference_pipeline_second_run_hits_cache_without_detector_call(
+    tmp_path: Path,
+) -> None:
+    from xh_detect.pipeline import InferencePipeline
+
+    config = PipelineConfig(tile_size=4, overlap=0.0, batch_size=2, edge_margin=0)
+    image = np.zeros((4, 4, 3), dtype=np.uint8)
+
+    first_detector = RecordingDetector([[_prediction(class_id=2, score=0.9)]])
+    first_pipeline = InferencePipeline(
+        detector=first_detector,
+        config=config,
+        cache_root=tmp_path / "cache",
+    )
+    expected_detections, _ = first_pipeline.run(image, "scene-cache")
+
+    second_detector = FailingDetector()
+    second_pipeline = InferencePipeline(
+        detector=second_detector,
+        config=config,
+        cache_root=tmp_path / "cache",
+    )
+    detections, _ = second_pipeline.run(image, "scene-cache")
+
+    assert detections == expected_detections
+    assert second_detector.calls == 0
+
+
+def test_inference_pipeline_only_predicts_missing_tiles_when_cache_is_partial(
+    tmp_path: Path,
+) -> None:
+    from xh_detect.pipeline import InferencePipeline
+
+    config = PipelineConfig(tile_size=4, overlap=0.5, batch_size=8, edge_margin=0)
+    image = np.zeros((4, 6, 3), dtype=np.uint8)
+    image[:, 2:, :] = 2
+
+    first_detector = PixelDrivenDetector()
+    first_pipeline = InferencePipeline(
+        detector=first_detector,
+        config=config,
+        cache_root=tmp_path / "cache",
+    )
+    expected_detections, _ = first_pipeline.run(image, "scene-partial")
+
+    namespace_root = next((tmp_path / "cache").iterdir())
+    cached_files = sorted(namespace_root.glob("*.json"))
+    assert len(cached_files) == 2
+    cached_files[0].unlink()
+
+    second_detector = PixelDrivenDetector()
+    second_pipeline = InferencePipeline(
+        detector=second_detector,
+        config=config,
+        cache_root=tmp_path / "cache",
+    )
+    detections, _ = second_pipeline.run(image, "scene-partial")
+
+    assert detections == expected_detections
+    assert second_detector.calls == [(1, 0.25)]
+
+
+def test_inference_pipeline_cache_key_includes_image_fingerprint(tmp_path: Path) -> None:
+    from xh_detect.pipeline import InferencePipeline
+
+    config = PipelineConfig(tile_size=4, overlap=0.0, batch_size=2, edge_margin=0)
+    detector = PixelDrivenDetector()
+    pipeline = InferencePipeline(detector=detector, config=config, cache_root=tmp_path / "cache")
+
+    image_a = np.zeros((4, 4, 3), dtype=np.uint8)
+    image_b = np.full((4, 4, 3), fill_value=1, dtype=np.uint8)
+
+    detections_a, _ = pipeline.run(image_a, "same-id")
+    detections_b, _ = pipeline.run(image_b, "same-id")
+
+    assert [item.class_id for item in detections_a] == [0]
+    assert [item.class_id for item in detections_b] == [1]
+    assert detector.calls == [(1, 0.25), (1, 0.25)]
+
+
+def test_cache_namespace_is_stable_and_changes_with_config_or_model_metadata(
+    tmp_path: Path,
+) -> None:
+    from xh_detect.pipeline import _cache_namespace
+
+    model_path = tmp_path / "model.pt"
+    model_path.write_bytes(b"abc")
+    config = PipelineConfig(model_path=str(model_path))
+    same_config = PipelineConfig(model_path=str(model_path))
+
+    namespace_a = _cache_namespace(config)
+    namespace_b = _cache_namespace(same_config)
+
+    assert namespace_a == namespace_b
+
+    different_thresholds = PipelineConfig(
+        model_path=str(model_path),
+        class_thresholds={0: 0.2, 1: 0.25, 2: 0.25},
+    )
+    assert _cache_namespace(different_thresholds) != namespace_a
+
+    model_path.write_bytes(b"abcdef")
+    assert _cache_namespace(config) != namespace_a
+
+
+def test_inference_pipeline_recomputes_when_cache_payload_is_corrupt(
+    tmp_path: Path,
+) -> None:
+    from xh_detect.pipeline import InferencePipeline
+
+    config = PipelineConfig(tile_size=4, overlap=0.0, batch_size=2, edge_margin=0)
+    image = np.zeros((4, 4, 3), dtype=np.uint8)
+    first_detector = RecordingDetector([[_prediction(class_id=2, score=0.9)]])
+    first_pipeline = InferencePipeline(
+        detector=first_detector,
+        config=config,
+        cache_root=tmp_path / "cache",
+    )
+    expected_detections, _ = first_pipeline.run(image, "scene-corrupt")
+
+    namespace_root = next((tmp_path / "cache").iterdir())
+    cached_file = next(namespace_root.glob("*.json"))
+    cached_file.write_text("{", encoding="utf-8")
+
+    second_detector = RecordingDetector([[_prediction(class_id=2, score=0.9)]])
+    second_pipeline = InferencePipeline(
+        detector=second_detector,
+        config=config,
+        cache_root=tmp_path / "cache",
+    )
+    detections, _ = second_pipeline.run(image, "scene-corrupt")
+
+    assert detections == expected_detections
+    assert second_detector.calls == [{"count": 1, "confidence": 0.25, "shapes": [(4, 4, 3)]}]
+
+
+@pytest.mark.parametrize("image_id", ["", "   "])
+def test_inference_pipeline_rejects_empty_image_id(image_id: str) -> None:
+    from xh_detect.pipeline import InferencePipeline
+
+    pipeline = InferencePipeline(
+        detector=RecordingDetector([[]]),
+        config=PipelineConfig(),
+    )
+
+    with pytest.raises(ValueError, match="image_id must be a non-empty string"):
+        pipeline.run(np.zeros((4, 4, 3), dtype=np.uint8), image_id)
+
+
+def test_inference_pipeline_propagates_tiling_validation_errors() -> None:
+    from xh_detect.pipeline import InferencePipeline
+
+    pipeline = InferencePipeline(
+        detector=RecordingDetector([[]]),
+        config=PipelineConfig(),
+    )
+
+    with pytest.raises(ValueError, match="image height and width must be positive"):
+        pipeline.run(np.zeros((0, 4, 3), dtype=np.uint8), "bad-image")
+
+
+def test_inference_pipeline_does_not_modify_input_array() -> None:
+    from xh_detect.pipeline import InferencePipeline
+
+    image = np.arange(4 * 4 * 3, dtype=np.uint8).reshape(4, 4, 3)
+    original = image.copy()
+    pipeline = InferencePipeline(
+        detector=RecordingDetector([[_prediction(class_id=1, score=0.9)]]),
+        config=PipelineConfig(tile_size=4, overlap=0.0, batch_size=2, edge_margin=0),
+    )
+
+    pipeline.run(image, "immutable-scene")
+
+    np.testing.assert_array_equal(image, original)
+
+
+def test_inference_pipeline_does_not_write_cache_when_inference_fails(
+    tmp_path: Path,
+) -> None:
+    from xh_detect.pipeline import InferencePipeline
+
+    pipeline = InferencePipeline(
+        detector=FailingDetector(),
+        config=PipelineConfig(tile_size=4, overlap=0.5, batch_size=8, edge_margin=0),
+        cache_root=tmp_path / "cache",
+    )
+
+    with pytest.raises(RuntimeError, match="detector failed"):
+        pipeline.run(np.zeros((4, 6, 3), dtype=np.uint8), "scene-fail")
+
+    namespace_root = next((tmp_path / "cache").iterdir())
+    assert list(namespace_root.iterdir()) == []
