@@ -106,6 +106,33 @@ def test_convert_split_counts_only_malformed_mapped_target_lines(tmp_path: Path)
     assert (output_root / "labels" / "train" / "P0003.txt").read_text(encoding="utf-8") == ""
 
 
+def test_convert_split_rejects_invalid_difficult_tokens_for_mapped_targets(
+    tmp_path: Path,
+) -> None:
+    images_dir = tmp_path / "images"
+    labels_dir = tmp_path / "labels"
+    output_root = tmp_path / "converted"
+    images_dir.mkdir()
+    labels_dir.mkdir()
+    Image.new("RGB", (100, 100), color="black").save(images_dir / "P0003.png")
+    (labels_dir / "P0003.txt").write_text(
+        "10 10 30 10 30 30 10 30 plane 0\n"
+        "10 10 30 10 30 30 10 30 plane x\n"
+        "10 10 30 10 30 30 10 30 plane\n"
+        "10 10 30 10 30 30 10 30 harbor x\n",
+        encoding="utf-8",
+    )
+
+    stats = convert_split(images_dir, labels_dir, output_root, split="train")
+
+    assert stats.invalid_lines == 2
+    assert stats.targets == {0: 1, 1: 0, 2: 0}
+    assert (output_root / "labels" / "train" / "P0003.txt").read_text(encoding="utf-8") == (
+        "0 0.10000000 0.10000000 0.30000000 0.10000000 "
+        "0.30000000 0.30000000 0.10000000 0.30000000\n"
+    )
+
+
 @pytest.mark.parametrize(
     ("line", "image_name"),
     [
@@ -135,6 +162,86 @@ def test_convert_split_rejects_invalid_target_geometry(
     assert (output_root / "labels" / "train" / f"{image_name}.txt").read_text(
         encoding="utf-8"
     ) == ""
+
+
+@pytest.mark.parametrize(
+    "split",
+    [
+        "../../outside",
+        "/outside",
+        "",
+        "train/evil",
+        "train\\evil",
+    ],
+)
+def test_convert_split_rejects_invalid_split_without_touching_paths(
+    tmp_path: Path,
+    split: str,
+) -> None:
+    images_dir = tmp_path / "images"
+    labels_dir = tmp_path / "labels"
+    output_root = tmp_path / "converted"
+    outside_dir = tmp_path / "outside"
+    probe_file = tmp_path / "probe.txt"
+    images_dir.mkdir()
+    labels_dir.mkdir()
+    Image.new("RGB", (100, 100), color="black").save(images_dir / "P0011.png")
+    probe_file.write_text("keep", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="split"):
+        convert_split(images_dir, labels_dir, output_root, split=split)
+
+    assert not output_root.exists()
+    assert not outside_dir.exists()
+    assert probe_file.read_text(encoding="utf-8") == "keep"
+
+
+def test_link_or_copy_prefers_symlink_when_hardlink_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "nested" / "destination.bin"
+    source.write_bytes(b"symlink-fallback")
+    symlink_calls: list[tuple[Path, Path]] = []
+
+    def fake_link(*_args: object, **_kwargs: object) -> None:
+        raise OSError("hardlinks unavailable")
+
+    def fake_symlink_to(self: Path, target: Path, target_is_directory: bool = False) -> None:
+        assert not target_is_directory
+        symlink_calls.append((self, Path(target)))
+        self.write_bytes(Path(target).read_bytes())
+
+    monkeypatch.setattr(os, "link", fake_link)
+    monkeypatch.setattr(Path, "symlink_to", fake_symlink_to)
+
+    dota_module._link_or_copy(source, destination)
+
+    assert destination.read_bytes() == b"symlink-fallback"
+    assert symlink_calls == [(destination, source.resolve())]
+
+
+def test_link_or_copy_falls_back_to_copy2_when_link_and_symlink_fail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "nested" / "destination.bin"
+    source.write_bytes(b"copy-fallback")
+
+    def fake_link(*_args: object, **_kwargs: object) -> None:
+        raise OSError("hardlinks unavailable")
+
+    def fake_symlink_to(*_args: object, **_kwargs: object) -> None:
+        raise OSError("symlinks unavailable")
+
+    monkeypatch.setattr(os, "link", fake_link)
+    monkeypatch.setattr(Path, "symlink_to", fake_symlink_to)
+
+    dota_module._link_or_copy(source, destination)
+
+    assert destination.read_bytes() == b"copy-fallback"
 
 
 def test_convert_split_skips_corrupt_images(tmp_path: Path) -> None:

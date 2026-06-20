@@ -24,6 +24,8 @@ CLASS_MAP = {
     "large vehicle": 2,
 }
 
+VALID_SPLITS = {"train", "val", "test"}
+
 
 @dataclass(frozen=True)
 class ConversionStats:
@@ -46,10 +48,42 @@ def _parse_label_file(path: Path, image_id: str) -> tuple[tuple[ObjectAnnotation
     invalid_lines = 0
     for line in path.read_text(encoding="utf-8-sig").splitlines():
         parts = line.split()
-        if len(parts) < 10 or parts[0].startswith("imagesource:") or parts[0].startswith("gsd:"):
+        if not parts or parts[0].startswith("imagesource:") or parts[0].startswith("gsd:"):
             continue
-        class_name = " ".join(parts[8:-1]).lower()
-        if class_name not in CLASS_MAP:
+        if len(parts) < 9:
+            continue
+
+        class_tokens = [token.lower() for token in parts[8:]]
+        matched_class_name: str | None = None
+        class_id = 0
+        difficult_token: str | None = None
+        invalid_target = False
+        for candidate_name, candidate_class_id in sorted(
+            CLASS_MAP.items(),
+            key=lambda item: len(item[0].split()),
+            reverse=True,
+        ):
+            candidate_tokens = candidate_name.split()
+            if class_tokens[: len(candidate_tokens)] != candidate_tokens:
+                continue
+            if len(class_tokens) == len(candidate_tokens) + 1:
+                matched_class_name = candidate_name
+                class_id = candidate_class_id
+                difficult_token = parts[8 + len(candidate_tokens)]
+                break
+            if len(class_tokens) == len(candidate_tokens):
+                invalid_target = True
+                matched_class_name = candidate_name
+                class_id = candidate_class_id
+                break
+
+        if matched_class_name is None:
+            continue
+        if invalid_target:
+            invalid_lines += 1
+            continue
+        if difficult_token not in {"0", "1"}:
+            invalid_lines += 1
             continue
         try:
             coordinates = [float(value) for value in parts[:8]]
@@ -65,9 +99,9 @@ def _parse_label_file(path: Path, image_id: str) -> tuple[tuple[ObjectAnnotation
         annotations.append(
             ObjectAnnotation(
                 image_id=image_id,
-                class_id=CLASS_MAP[class_name],
+                class_id=class_id,
                 polygon=polygon,
-                difficult=parts[-1] == "1",
+                difficult=difficult_token == "1",
             )
         )
     return tuple(annotations), invalid_lines
@@ -116,6 +150,9 @@ def convert_split(
     output_root: Path,
     split: str,
 ) -> ConversionStats:
+    if split not in VALID_SPLITS:
+        raise ValueError(f"invalid split {split!r}; expected one of {sorted(VALID_SPLITS)}")
+
     converted_images = 0
     invalid_lines = 0
     skipped_images = 0
