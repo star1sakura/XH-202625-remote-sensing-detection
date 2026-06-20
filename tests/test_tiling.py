@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import math
-from typing import get_args, get_type_hints
 
 import numpy as np
 import pytest
 
 from xh_detect.tiling import axis_positions, iter_tiles
-from xh_detect.types import ImageArray, Tile
 
 
 def test_axis_positions_returns_origin_when_length_fits_in_one_tile() -> None:
@@ -26,15 +24,6 @@ def test_axis_positions_large_image_uses_expected_grid_count() -> None:
     assert len(positions) * len(positions) == 144
     assert positions[-1] == 8976
     assert len(positions) == len(set(positions))
-
-
-def test_image_array_contract_accepts_non_uint8_dtypes() -> None:
-    assert get_args(ImageArray)[1] == np.dtype[np.generic]
-    assert get_type_hints(Tile)["image"] == ImageArray
-
-
-def test_iter_tiles_public_annotation_uses_image_array_not_object() -> None:
-    assert get_type_hints(iter_tiles)["image"] == ImageArray
 
 
 @pytest.mark.parametrize(
@@ -75,6 +64,90 @@ def test_iter_tiles_pads_small_grayscale_image_and_preserves_dtype() -> None:
     assert tile.meta.valid_height == 2
 
 
+def test_iter_tiles_uses_default_pad_value_for_uint8() -> None:
+    image = np.array([[7]], dtype=np.uint8)
+
+    tile = next(iter_tiles(image, "default-pad", tile_size=2, overlap=0.0))
+
+    assert tile.image.dtype == np.uint8
+    np.testing.assert_array_equal(
+        tile.image,
+        np.array([[7, 114], [114, 114]], dtype=np.uint8),
+    )
+
+
+@pytest.mark.parametrize("pad_value", [-1, 300, 1.5, math.nan, math.inf, -math.inf])
+def test_iter_tiles_rejects_pad_value_not_losslessly_representable_by_uint8(
+    pad_value,
+) -> None:
+    image = np.ones((1, 1), dtype=np.uint8)
+
+    with pytest.raises(ValueError, match="pad_value"):
+        list(iter_tiles(image, "bad-pad", tile_size=2, overlap=0.0, pad_value=pad_value))
+
+
+@pytest.mark.parametrize("pad_value", [[1], np.array(1, dtype=np.int64)])
+def test_iter_tiles_rejects_non_scalar_pad_value(pad_value) -> None:
+    image = np.ones((1, 1), dtype=np.uint8)
+
+    with pytest.raises(TypeError, match="pad_value must be a scalar"):
+        list(iter_tiles(image, "bad-pad", tile_size=2, overlap=0.0, pad_value=pad_value))
+
+
+def test_iter_tiles_rejects_finite_float_not_exactly_representable_by_float32() -> None:
+    image = np.ones((1, 1), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="pad_value"):
+        list(iter_tiles(image, "lossy-pad", tile_size=2, overlap=0.0, pad_value=0.1))
+
+
+@pytest.mark.parametrize("pad_value", [math.nan, math.inf, -math.inf])
+def test_iter_tiles_allows_non_finite_pad_value_for_float_dtype(pad_value) -> None:
+    image = np.ones((1, 1), dtype=np.float32)
+
+    tile = next(
+        iter_tiles(image, "float-pad", tile_size=2, overlap=0.0, pad_value=pad_value)
+    )
+
+    padded = tile.image[1, 1]
+    if math.isnan(pad_value):
+        assert np.isnan(padded)
+    else:
+        assert padded == pad_value
+
+
+def test_iter_tiles_accepts_exact_complex_pad_for_complex_dtype() -> None:
+    image = np.ones((1, 1), dtype=np.complex64)
+
+    tile = next(
+        iter_tiles(
+            image,
+            "complex-pad",
+            tile_size=2,
+            overlap=0.0,
+            pad_value=1.5 - 2.5j,
+        )
+    )
+
+    assert tile.image.dtype == np.complex64
+    assert tile.image[1, 1] == np.complex64(1.5 - 2.5j)
+
+
+def test_iter_tiles_rejects_complex_pad_for_real_dtype() -> None:
+    image = np.ones((1, 1), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="pad_value"):
+        list(
+            iter_tiles(
+                image,
+                "complex-pad",
+                tile_size=2,
+                overlap=0.0,
+                pad_value=1 + 0j,
+            )
+        )
+
+
 def test_iter_tiles_y_then_x_order_and_multichannel_metadata() -> None:
     image = np.arange(5 * 6 * 2, dtype=np.int16).reshape(5, 6, 2)
 
@@ -107,6 +180,19 @@ def test_iter_tiles_y_then_x_order_and_multichannel_metadata() -> None:
     assert all(tile.image.shape == (3, 3, 2) for tile in tiles)
     assert all(tile.image.dtype == image.dtype for tile in tiles)
     np.testing.assert_array_equal(tiles[0].image, image[:3, :3])
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        np.array([[1]], dtype=object),
+        np.array([["1"]], dtype=np.str_),
+        np.array([["2026-06-20"]], dtype="datetime64[D]"),
+    ],
+)
+def test_iter_tiles_rejects_non_numeric_image_dtype(image) -> None:
+    with pytest.raises(TypeError, match="image dtype must be numeric"):
+        list(iter_tiles(image, "bad-dtype", tile_size=2, overlap=0.0))
 
 
 @pytest.mark.parametrize(

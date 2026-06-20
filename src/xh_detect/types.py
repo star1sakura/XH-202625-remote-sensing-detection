@@ -1,11 +1,12 @@
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
 
 Point = tuple[float, float]
 Polygon4 = tuple[Point, Point, Point, Point]
-ImageArray = NDArray[np.generic]
+ImageArray = NDArray[np.number[Any]]
 
 
 @dataclass(frozen=True)

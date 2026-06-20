@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import math
+import warnings
 from collections.abc import Iterator
-from numbers import Integral, Real
+from numbers import Integral, Number, Real
 from typing import cast
 
 import numpy as np
@@ -57,7 +58,63 @@ def _validate_image(image: object) -> ImageArray:
         raise ValueError("image height and width must be positive")
     if array.ndim == 3 and array.shape[2] <= 0:
         raise ValueError("image channel dimension must be positive")
+    if not np.issubdtype(array.dtype, np.number):
+        raise TypeError("image dtype must be numeric")
     return cast(ImageArray, array)
+
+
+def _real_values_match(original: object, converted: object) -> bool:
+    original_value = original.item() if isinstance(original, np.generic) else original
+    converted_value = (
+        converted.item() if isinstance(converted, np.generic) else converted
+    )
+    if isinstance(original_value, (float, np.floating)):
+        if np.isnan(original_value):
+            return bool(np.isnan(converted_value))
+        if np.isinf(original_value):
+            return bool(
+                np.isinf(converted_value)
+                and np.signbit(original_value) == np.signbit(converted_value)
+            )
+    return bool(converted_value == original_value)
+
+
+def _pad_value_matches_dtype(pad_value: object, converted: np.generic) -> bool:
+    if np.iscomplexobj(converted):
+        if np.iscomplexobj(pad_value):
+            original_real = pad_value.real
+            original_imag = pad_value.imag
+        else:
+            original_real = pad_value
+            original_imag = 0
+        return _real_values_match(
+            original_real, converted.real
+        ) and _real_values_match(original_imag, converted.imag)
+    return _real_values_match(pad_value, converted)
+
+
+def _validate_pad_value(pad_value: object, dtype: np.dtype) -> np.generic:
+    if not np.isscalar(pad_value):
+        raise TypeError("pad_value must be a scalar")
+    if not isinstance(pad_value, (Number, np.number, np.bool_)):
+        raise TypeError("pad_value must be a numeric scalar")
+    if np.iscomplexobj(pad_value) and not np.issubdtype(dtype, np.complexfloating):
+        raise ValueError(f"pad_value must be losslessly representable by image dtype {dtype}")
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            converted = dtype.type(pad_value)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise ValueError(
+            f"pad_value must be losslessly representable by image dtype {dtype}"
+        ) from exc
+
+    if not _pad_value_matches_dtype(pad_value, converted):
+        raise ValueError(
+            f"pad_value must be losslessly representable by image dtype {dtype}"
+        )
+    return converted
 
 
 def _empty_tile_shape(image: ImageArray, tile_size: int) -> tuple[int, ...]:
@@ -106,6 +163,7 @@ def iter_tiles(
     array = _validate_image(image)
     tile_size = _validate_int("tile_size", tile_size, minimum=1)
     overlap_value = _validate_overlap(overlap)
+    normalized_pad_value = _validate_pad_value(pad_value, array.dtype)
 
     stride = max(1, round(tile_size * (1.0 - overlap_value)))
     y_positions = axis_positions(array.shape[0], tile_size, stride)
@@ -113,4 +171,4 @@ def iter_tiles(
 
     for y in y_positions:
         for x in x_positions:
-            yield _make_tile(array, image_id, tile_size, x, y, pad_value)
+            yield _make_tile(array, image_id, tile_size, x, y, normalized_pad_value)
