@@ -13,7 +13,14 @@ from xh_detect.config import PipelineConfig
 from xh_detect.detector import Detector, predict_with_oom_backoff
 from xh_detect.merge import keep_tile_prediction, merge_detections, project_prediction
 from xh_detect.tiling import iter_tiles
-from xh_detect.types import BoxPrediction, Detection, ImageArray, StageTimings, Tile
+from xh_detect.types import (
+    BoxPrediction,
+    Detection,
+    ImageArray,
+    InferenceResult,
+    StageTimings,
+    Tile,
+)
 
 
 def _validate_non_empty_string(value: object, name: str) -> str:
@@ -103,7 +110,7 @@ class InferencePipeline:
             else None
         )
 
-    def run(self, image: ImageArray, image_id: str) -> tuple[tuple[Detection, ...], StageTimings]:
+    def run(self, image: ImageArray, image_id: str) -> InferenceResult:
         normalized_image_id = _validate_non_empty_string(image_id, "image_id")
 
         total_start = time.perf_counter()
@@ -195,4 +202,4 @@ class InferencePipeline:
             postprocess_s=postprocess_s,
             total_s=max(total_elapsed, measured_sum),
         )
-        return merged, timings
+        return InferenceResult(detections=merged, timings=timings)

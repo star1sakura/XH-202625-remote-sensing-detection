@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from xh_detect.config import PipelineConfig
-from xh_detect.types import BoxPrediction
+from xh_detect.types import BoxPrediction, InferenceResult
 
 
 def _prediction(
@@ -74,19 +74,27 @@ def test_inference_pipeline_runs_single_tile_and_reports_timings() -> None:
     pipeline = InferencePipeline(detector=detector, config=config)
     image = np.zeros((4, 4, 3), dtype=np.uint8)
 
-    detections, timings = pipeline.run(image, "scene-1")
+    result = pipeline.run(image, "scene-1")
 
-    assert len(detections) == 1
-    assert detections[0].image_id == "scene-1"
-    assert detections[0].class_id == 2
-    assert detections[0].score == 0.9
-    assert detections[0].polygon == ((1.0, 1.0), (3.0, 1.0), (3.0, 3.0), (1.0, 3.0))
+    assert isinstance(result, InferenceResult)
+    assert len(result.detections) == 1
+    assert result.detections[0].image_id == "scene-1"
+    assert result.detections[0].class_id == 2
+    assert result.detections[0].score == 0.9
+    assert result.detections[0].polygon == (
+        (1.0, 1.0),
+        (3.0, 1.0),
+        (3.0, 3.0),
+        (1.0, 3.0),
+    )
     assert detector.calls == [{"count": 1, "confidence": 0.25, "shapes": [(4, 4, 3)]}]
-    assert timings.preprocess_s >= 0.0
-    assert timings.inference_s >= 0.0
-    assert timings.postprocess_s >= 0.0
-    assert timings.total_s + 1e-9 >= (
-        timings.preprocess_s + timings.inference_s + timings.postprocess_s
+    assert result.timings.preprocess_s >= 0.0
+    assert result.timings.inference_s >= 0.0
+    assert result.timings.postprocess_s >= 0.0
+    assert result.timings.total_s + 1e-9 >= (
+        result.timings.preprocess_s
+        + result.timings.inference_s
+        + result.timings.postprocess_s
     )
 
 
@@ -115,9 +123,9 @@ def test_inference_pipeline_merges_cross_tile_duplicates_in_stable_order() -> No
     pipeline = InferencePipeline(detector=detector, config=config)
     image = np.zeros((4, 6, 3), dtype=np.uint8)
 
-    detections, _ = pipeline.run(image, "scene-merge")
+    result = pipeline.run(image, "scene-merge")
 
-    assert [(item.class_id, item.score, item.polygon) for item in detections] == [
+    assert [(item.class_id, item.score, item.polygon) for item in result.detections] == [
         (1, 0.9, ((2.0, 1.0), (4.0, 1.0), (4.0, 3.0), (2.0, 3.0)))
     ]
 
@@ -144,9 +152,9 @@ def test_inference_pipeline_filters_by_per_class_thresholds_and_unknown_classes(
     )
     pipeline = InferencePipeline(detector=detector, config=config)
 
-    detections, _ = pipeline.run(np.zeros((4, 4, 3), dtype=np.uint8), "threshold-scene")
+    result = pipeline.run(np.zeros((4, 4, 3), dtype=np.uint8), "threshold-scene")
 
-    assert [(item.class_id, item.score) for item in detections] == [(1, 0.6)]
+    assert [(item.class_id, item.score) for item in result.detections] == [(1, 0.6)]
     assert detector.calls[0]["confidence"] == 0.4
 
 
@@ -164,7 +172,7 @@ def test_inference_pipeline_second_run_hits_cache_without_detector_call(
         config=config,
         cache_root=tmp_path / "cache",
     )
-    expected_detections, _ = first_pipeline.run(image, "scene-cache")
+    expected_result = first_pipeline.run(image, "scene-cache")
 
     second_detector = FailingDetector()
     second_pipeline = InferencePipeline(
@@ -172,9 +180,9 @@ def test_inference_pipeline_second_run_hits_cache_without_detector_call(
         config=config,
         cache_root=tmp_path / "cache",
     )
-    detections, _ = second_pipeline.run(image, "scene-cache")
+    result = second_pipeline.run(image, "scene-cache")
 
-    assert detections == expected_detections
+    assert result.detections == expected_result.detections
     assert second_detector.calls == 0
 
 
@@ -193,7 +201,7 @@ def test_inference_pipeline_only_predicts_missing_tiles_when_cache_is_partial(
         config=config,
         cache_root=tmp_path / "cache",
     )
-    expected_detections, _ = first_pipeline.run(image, "scene-partial")
+    expected_result = first_pipeline.run(image, "scene-partial")
 
     namespace_root = next((tmp_path / "cache").iterdir())
     cached_files = sorted(namespace_root.glob("*.json"))
@@ -206,9 +214,9 @@ def test_inference_pipeline_only_predicts_missing_tiles_when_cache_is_partial(
         config=config,
         cache_root=tmp_path / "cache",
     )
-    detections, _ = second_pipeline.run(image, "scene-partial")
+    result = second_pipeline.run(image, "scene-partial")
 
-    assert detections == expected_detections
+    assert result.detections == expected_result.detections
     assert second_detector.calls == [(1, 0.25)]
 
 
@@ -222,11 +230,11 @@ def test_inference_pipeline_cache_key_includes_image_fingerprint(tmp_path: Path)
     image_a = np.zeros((4, 4, 3), dtype=np.uint8)
     image_b = np.full((4, 4, 3), fill_value=1, dtype=np.uint8)
 
-    detections_a, _ = pipeline.run(image_a, "same-id")
-    detections_b, _ = pipeline.run(image_b, "same-id")
+    result_a = pipeline.run(image_a, "same-id")
+    result_b = pipeline.run(image_b, "same-id")
 
-    assert [item.class_id for item in detections_a] == [0]
-    assert [item.class_id for item in detections_b] == [1]
+    assert [item.class_id for item in result_a.detections] == [0]
+    assert [item.class_id for item in result_b.detections] == [1]
     assert detector.calls == [(1, 0.25), (1, 0.25)]
 
 
@@ -268,7 +276,7 @@ def test_inference_pipeline_recomputes_when_cache_payload_is_corrupt(
         config=config,
         cache_root=tmp_path / "cache",
     )
-    expected_detections, _ = first_pipeline.run(image, "scene-corrupt")
+    expected_result = first_pipeline.run(image, "scene-corrupt")
 
     namespace_root = next((tmp_path / "cache").iterdir())
     cached_file = next(namespace_root.glob("*.json"))
@@ -280,10 +288,25 @@ def test_inference_pipeline_recomputes_when_cache_payload_is_corrupt(
         config=config,
         cache_root=tmp_path / "cache",
     )
-    detections, _ = second_pipeline.run(image, "scene-corrupt")
+    result = second_pipeline.run(image, "scene-corrupt")
 
-    assert detections == expected_detections
+    assert result.detections == expected_result.detections
     assert second_detector.calls == [{"count": 1, "confidence": 0.25, "shapes": [(4, 4, 3)]}]
+
+
+def test_inference_pipeline_run_returns_inference_result_dataclass() -> None:
+    from xh_detect.pipeline import InferencePipeline
+
+    pipeline = InferencePipeline(
+        detector=RecordingDetector([[_prediction(class_id=1, score=0.9)]]),
+        config=PipelineConfig(tile_size=4, overlap=0.0, batch_size=2, edge_margin=0),
+    )
+
+    result = pipeline.run(np.zeros((4, 4, 3), dtype=np.uint8), "shape-scene")
+
+    assert isinstance(result, InferenceResult)
+    assert hasattr(result, "detections")
+    assert hasattr(result, "timings")
 
 
 @pytest.mark.parametrize("image_id", ["", "   "])
