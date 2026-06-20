@@ -126,25 +126,28 @@ def merge_detections(
 ) -> list[Detection]:
     threshold = _validate_iou_threshold(iou_threshold)
 
-    grouped: dict[tuple[str, int], list[Detection]] = defaultdict(list)
-    for detection in detections:
-        grouped[(detection.image_id, detection.class_id)].append(detection)
+    grouped: dict[tuple[str, int], list[tuple[int, Detection]]] = defaultdict(list)
+    for original_index, detection in enumerate(detections):
+        grouped[(detection.image_id, detection.class_id)].append((original_index, detection))
 
-    kept: list[Detection] = []
+    kept: list[tuple[int, Detection]] = []
     for group in grouped.values():
-        remaining = sorted(group, key=lambda item: item.score, reverse=True)
+        remaining = sorted(group, key=lambda item: (-item[1].score, item[0]))
         while remaining:
-            selected = remaining.pop(0)
-            kept.append(selected)
+            selected_index, selected = remaining.pop(0)
+            kept.append((selected_index, selected))
             selected_hbb = obb_to_hbb(selected.polygon)
-            survivors: list[Detection] = []
-            for candidate in remaining:
+            survivors: list[tuple[int, Detection]] = []
+            for candidate_index, candidate in remaining:
                 candidate_hbb = obb_to_hbb(candidate.polygon)
                 if hbb_iou(selected_hbb, candidate_hbb) == 0.0:
-                    survivors.append(candidate)
+                    survivors.append((candidate_index, candidate))
                     continue
                 if _polygon_iou_safely(selected.polygon, candidate.polygon) < threshold:
-                    survivors.append(candidate)
+                    survivors.append((candidate_index, candidate))
             remaining = survivors
 
-    return sorted(kept, key=lambda item: item.score, reverse=True)
+    return [
+        detection
+        for _, detection in sorted(kept, key=lambda item: (-item[1].score, item[0]))
+    ]

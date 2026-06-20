@@ -286,6 +286,32 @@ def test_merge_detections_keeps_different_images_and_classes() -> None:
     assert merged == [detections[0], detections[1], detections[2]]
 
 
+def test_merge_detections_preserves_original_order_for_equal_scores_across_groups() -> None:
+    group_a_left = _detection(
+        image_id="scene",
+        class_id=0,
+        score=0.8,
+        polygon=((0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)),
+    )
+    group_b = _detection(
+        image_id="other",
+        class_id=1,
+        score=0.8,
+        polygon=((100.0, 100.0), (110.0, 100.0), (110.0, 110.0), (100.0, 110.0)),
+    )
+    group_a_right = _detection(
+        image_id="scene",
+        class_id=0,
+        score=0.8,
+        polygon=((30.0, 30.0), (40.0, 30.0), (40.0, 40.0), (30.0, 40.0)),
+    )
+    detections = [group_a_left, group_b, group_a_right]
+
+    merged = merge_detections(detections, iou_threshold=0.3)
+
+    assert merged == detections
+
+
 def test_merge_detections_skips_polygon_iou_when_hbbs_do_not_overlap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
