@@ -80,24 +80,30 @@ class NeverCalledDetector:
 
 
 class FakeTensor:
-    def __init__(self, values: object) -> None:
+    def __init__(self, values: object, name: str, calls: list[str]) -> None:
         self._values = np.asarray(values)
+        self._name = name
+        self._calls = calls
 
     def detach(self) -> "FakeTensor":
+        self._calls.append(f"{self._name}.detach")
         return self
 
     def cpu(self) -> "FakeTensor":
+        self._calls.append(f"{self._name}.cpu")
         return self
 
     def numpy(self) -> np.ndarray:
+        self._calls.append(f"{self._name}.numpy")
         return self._values
 
 
 class FakeObb:
     def __init__(self, polygons: object, classes: object, scores: object) -> None:
-        self.xyxyxyxy = FakeTensor(polygons)
-        self.cls = FakeTensor(classes)
-        self.conf = FakeTensor(scores)
+        self.tensor_calls: list[str] = []
+        self.xyxyxyxy = FakeTensor(polygons, "polygon", self.tensor_calls)
+        self.cls = FakeTensor(classes, "class", self.tensor_calls)
+        self.conf = FakeTensor(scores, "score", self.tensor_calls)
 
 
 class FakeResult:
@@ -343,21 +349,15 @@ def test_ultralytics_detector_predict_passes_expected_kwargs_and_converts_boxes(
         np.zeros((4, 4, 3), dtype=np.uint8),
         np.ones((4, 4, 3), dtype=np.uint8),
     ]
-    fake_model = FakeModel(
-        [
-            FakeResult(
-                FakeObb(
-                    polygons=[
-                        [[1, 2], [5, 2], [5, 6], [1, 6]],
-                        [[10.5, 20.25], [30.5, 20.25], [30.5, 40.75], [10.5, 40.75]],
-                    ],
-                    classes=[2.0, 1.0],
-                    scores=[0.75, 0.5],
-                )
-            ),
-            FakeResult(None),
-        ]
+    obb = FakeObb(
+        polygons=[
+            [[1, 2], [5, 2], [5, 6], [1, 6]],
+            [[10.5, 20.25], [30.5, 20.25], [30.5, 40.75], [10.5, 40.75]],
+        ],
+        classes=[0.0, 2],
+        scores=[0.75, 0.5],
     )
+    fake_model = FakeModel([FakeResult(obb), FakeResult(None)])
     captured_paths: list[str] = []
 
     def fake_yolo(model_path: str) -> FakeModel:
@@ -385,21 +385,101 @@ def test_ultralytics_detector_predict_passes_expected_kwargs_and_converts_boxes(
             "verbose": False,
         }
     ]
+    assert obb.tensor_calls == [
+        "polygon.detach",
+        "polygon.cpu",
+        "polygon.numpy",
+        "class.detach",
+        "class.cpu",
+        "class.numpy",
+        "score.detach",
+        "score.cpu",
+        "score.numpy",
+    ]
     assert predictions == [
         [
             BoxPrediction(
-                class_id=2,
+                class_id=0,
                 score=0.75,
                 polygon=((1.0, 2.0), (5.0, 2.0), (5.0, 6.0), (1.0, 6.0)),
             ),
             BoxPrediction(
-                class_id=1,
+                class_id=2,
                 score=0.5,
                 polygon=((10.5, 20.25), (30.5, 20.25), (30.5, 40.75), (10.5, 40.75)),
             ),
         ],
         [],
     ]
+
+
+def test_ultralytics_detector_empty_input_skips_model_predict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from xh_detect import detector as detector_module
+
+    fake_model = FakeModel([])
+    monkeypatch.setattr(detector_module, "YOLO", lambda model_path: fake_model)
+    detector = detector_module.UltralyticsOBBDetector("weights.pt", "cpu", 640, False)
+
+    assert detector.predict([], confidence=0.25) == []
+    assert fake_model.calls == []
+
+
+@pytest.mark.parametrize("class_id", [1.9, -1, math.nan, math.inf, -math.inf])
+def test_ultralytics_detector_rejects_invalid_class_ids(
+    monkeypatch: pytest.MonkeyPatch,
+    class_id: float,
+) -> None:
+    from xh_detect import detector as detector_module
+
+    fake_model = FakeModel(
+        [
+            FakeResult(
+                FakeObb(
+                    polygons=[[[1, 2], [3, 2], [3, 4], [1, 4]]],
+                    classes=[class_id],
+                    scores=[0.5],
+                )
+            )
+        ]
+    )
+    monkeypatch.setattr(detector_module, "YOLO", lambda model_path: fake_model)
+    detector = detector_module.UltralyticsOBBDetector("weights.pt", "cpu", 640, False)
+
+    with pytest.raises(
+        ValueError,
+        match="result 0 has invalid OBB class at box 0",
+    ):
+        detector.predict([np.zeros((4, 4, 3), dtype=np.uint8)], confidence=0.25)
+
+
+@pytest.mark.parametrize("score", [-0.1, 1.1, math.nan, math.inf, -math.inf])
+def test_ultralytics_detector_rejects_invalid_scores(
+    monkeypatch: pytest.MonkeyPatch,
+    score: float,
+) -> None:
+    from xh_detect import detector as detector_module
+
+    fake_model = FakeModel(
+        [
+            FakeResult(
+                FakeObb(
+                    polygons=[[[1, 2], [3, 2], [3, 4], [1, 4]]],
+                    classes=[0],
+                    scores=[score],
+                )
+            )
+        ]
+    )
+    monkeypatch.setattr(detector_module, "YOLO", lambda model_path: fake_model)
+    detector = detector_module.UltralyticsOBBDetector("weights.pt", "cpu", 640, False)
+
+    with pytest.raises(
+        ValueError,
+        match="result 0 has invalid OBB score at box 0",
+    ):
+        detector.predict([np.zeros((4, 4, 3), dtype=np.uint8)], confidence=0.25)
 
 
 def test_ultralytics_detector_rejects_result_count_mismatch(

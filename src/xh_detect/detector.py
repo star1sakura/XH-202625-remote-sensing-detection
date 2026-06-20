@@ -64,6 +64,54 @@ def _ensure_finite(array: np.ndarray, *, result_index: int) -> None:
         raise ValueError(f"result {result_index} contains non-finite OBB values")
 
 
+def _format_array_value(value: object) -> str:
+    if isinstance(value, np.generic):
+        value = value.item()
+    return repr(value)
+
+
+def _validate_class_ids(classes: np.ndarray, *, result_index: int) -> list[int]:
+    validated: list[int] = []
+    for box_index, class_id in enumerate(classes):
+        try:
+            numeric_class_id = float(class_id)
+        except (TypeError, ValueError, OverflowError):
+            numeric_class_id = math.nan
+        if (
+            isinstance(class_id, (bool, np.bool_))
+            or not math.isfinite(numeric_class_id)
+            or numeric_class_id < 0
+            or not numeric_class_id.is_integer()
+        ):
+            raise ValueError(
+                f"result {result_index} has invalid OBB class at box {box_index}: "
+                "expected a finite non-negative integer, got "
+                f"{_format_array_value(class_id)}"
+            )
+        validated.append(int(numeric_class_id))
+    return validated
+
+
+def _validate_scores(scores: np.ndarray, *, result_index: int) -> list[float]:
+    validated: list[float] = []
+    for box_index, score in enumerate(scores):
+        try:
+            numeric_score = float(score)
+        except (TypeError, ValueError, OverflowError):
+            numeric_score = math.nan
+        if (
+            isinstance(score, (bool, np.bool_))
+            or not math.isfinite(numeric_score)
+            or not 0.0 <= numeric_score <= 1.0
+        ):
+            raise ValueError(
+                f"result {result_index} has invalid OBB score at box {box_index}: "
+                f"expected a finite value in [0, 1], got {_format_array_value(score)}"
+            )
+        validated.append(numeric_score)
+    return validated
+
+
 def _extract_predictions(result: object, *, result_index: int) -> list[BoxPrediction]:
     obb = getattr(result, "obb", None)
     if obb is None:
@@ -100,16 +148,21 @@ def _extract_predictions(result: object, *, result_index: int) -> list[BoxPredic
         )
 
     _ensure_finite(polygons, result_index=result_index)
-    _ensure_finite(classes, result_index=result_index)
-    _ensure_finite(scores, result_index=result_index)
+    validated_classes = _validate_class_ids(classes, result_index=result_index)
+    validated_scores = _validate_scores(scores, result_index=result_index)
 
     predictions: list[BoxPrediction] = []
-    for polygon, class_id, score in zip(polygons, classes, scores, strict=True):
+    for polygon, class_id, score in zip(
+        polygons,
+        validated_classes,
+        validated_scores,
+        strict=True,
+    ):
         points = tuple((float(point[0]), float(point[1])) for point in polygon)
         predictions.append(
             BoxPrediction(
-                class_id=int(class_id),
-                score=float(score),
+                class_id=class_id,
+                score=score,
                 polygon=cast(Polygon4, points),
             )
         )
@@ -148,6 +201,8 @@ class UltralyticsOBBDetector:
         self, images: list[ImageArray], confidence: float
     ) -> list[list[BoxPrediction]]:
         validated_confidence = _validate_confidence(confidence)
+        if not images:
+            return []
         results = list(
             self.model.predict(
                 source=images,
