@@ -113,13 +113,6 @@ def keep_tile_prediction(
     )
 
 
-def _polygon_iou_safely(left: Polygon4, right: Polygon4) -> float:
-    try:
-        return polygon_iou(left, right)
-    except Exception:
-        return 0.0
-
-
 def merge_detections(
     detections: Iterable[Detection],
     iou_threshold: float,
@@ -143,7 +136,8 @@ def merge_detections(
                 if hbb_iou(selected_hbb, candidate_hbb) == 0.0:
                     survivors.append((candidate_index, candidate))
                     continue
-                if _polygon_iou_safely(selected.polygon, candidate.polygon) < threshold:
+                overlap = polygon_iou(selected.polygon, candidate.polygon)
+                if not (overlap > 0.0 and overlap >= threshold):
                     survivors.append((candidate_index, candidate))
             remaining = survivors
 

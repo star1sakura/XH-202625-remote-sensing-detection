@@ -4,7 +4,7 @@ from collections.abc import Iterable
 
 import pytest
 
-from xh_detect.geometry import obb_to_hbb
+from xh_detect.geometry import hbb_iou, obb_to_hbb, polygon_iou
 from xh_detect.merge import keep_tile_prediction, merge_detections, project_prediction
 from xh_detect.types import BoxPrediction, Detection, TileMeta
 
@@ -271,6 +271,69 @@ def test_merge_detections_suppresses_when_polygon_iou_meets_threshold() -> None:
     merged = merge_detections(detections, iou_threshold=1.0)
 
     assert merged == [detections[0]]
+
+
+def test_merge_detections_threshold_zero_keeps_disjoint_obbs_with_overlapping_hbbs() -> None:
+    polygon_a = ((0.0, -1.0), (11.0, 10.0), (10.0, 11.0), (-1.0, 0.0))
+    polygon_b = ((-3.0, 2.0), (8.0, 13.0), (7.0, 14.0), (-4.0, 3.0))
+    detections = [
+        _detection(image_id="scene", class_id=0, score=0.9, polygon=polygon_a),
+        _detection(image_id="scene", class_id=0, score=0.8, polygon=polygon_b),
+    ]
+    assert polygon_iou(polygon_a, polygon_a) == 1.0
+    assert polygon_iou(polygon_b, polygon_b) == 1.0
+    assert hbb_iou(obb_to_hbb(polygon_a), obb_to_hbb(polygon_b)) > 0.0
+    assert polygon_iou(polygon_a, polygon_b) == 0.0
+
+    merged = merge_detections(detections, iou_threshold=0.0)
+
+    assert merged == detections
+
+
+def test_merge_detections_threshold_zero_keeps_invalid_polygon_and_legal_obb() -> None:
+    bow_tie = ((0.0, 0.0), (10.0, 10.0), (0.0, 10.0), (10.0, 0.0))
+    square = ((0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0))
+    detections = [
+        _detection(image_id="scene", class_id=0, score=0.9, polygon=bow_tie),
+        _detection(image_id="scene", class_id=0, score=0.8, polygon=square),
+    ]
+
+    merged = merge_detections(detections, iou_threshold=0.0)
+
+    assert merged == detections
+
+
+def test_merge_detections_threshold_zero_suppresses_positive_polygon_iou() -> None:
+    polygon = ((10.0, 10.0), (30.0, 10.0), (30.0, 30.0), (10.0, 30.0))
+    detections = [
+        _detection(image_id="scene", class_id=0, score=0.9, polygon=polygon),
+        _detection(image_id="scene", class_id=0, score=0.8, polygon=polygon),
+    ]
+
+    merged = merge_detections(detections, iou_threshold=0.0)
+
+    assert merged == [detections[0]]
+
+
+def test_merge_detections_propagates_unexpected_polygon_iou_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    polygon = ((10.0, 10.0), (30.0, 10.0), (30.0, 30.0), (10.0, 30.0))
+    detections = [
+        _detection(image_id="scene", class_id=0, score=0.9, polygon=polygon),
+        _detection(image_id="scene", class_id=0, score=0.8, polygon=polygon),
+    ]
+
+    def fail_on_programming_error(
+        left: tuple[tuple[float, float], ...],
+        right: tuple[tuple[float, float], ...],
+    ) -> float:
+        raise RuntimeError("unexpected programming error")
+
+    monkeypatch.setattr("xh_detect.merge.polygon_iou", fail_on_programming_error)
+
+    with pytest.raises(RuntimeError, match="unexpected programming error"):
+        merge_detections(detections, iou_threshold=0.3)
 
 
 def test_merge_detections_keeps_different_images_and_classes() -> None:
