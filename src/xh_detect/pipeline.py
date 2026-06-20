@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+import warnings
 from pathlib import Path
 from typing import cast
 
@@ -165,9 +166,17 @@ class InferencePipeline:
                 missing_predictions,
                 strict=True,
             ):
-                if self.cache is not None:
-                    self.cache.save(cache_key, predictions)
                 tile_predictions[index] = predictions
+                if self.cache is not None:
+                    try:
+                        self.cache.save(cache_key, predictions)
+                    except OSError as exc:
+                        warnings.warn(
+                            f"failed to save cache key {cache_key!r}: "
+                            f"{type(exc).__name__}: {exc}",
+                            RuntimeWarning,
+                            stacklevel=2,
+                        )
 
         detections: list[Detection] = []
         image_height, image_width = np.asarray(image).shape[:2]

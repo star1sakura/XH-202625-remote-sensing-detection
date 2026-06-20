@@ -294,6 +294,65 @@ def test_inference_pipeline_recomputes_when_cache_payload_is_corrupt(
     assert second_detector.calls == [{"count": 1, "confidence": 0.25, "shapes": [(4, 4, 3)]}]
 
 
+def test_inference_pipeline_warns_and_returns_result_when_cache_save_has_oserror(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from xh_detect.pipeline import InferencePipeline
+
+    detector = RecordingDetector([[_prediction(class_id=2, score=0.9)]])
+    pipeline = InferencePipeline(
+        detector=detector,
+        config=PipelineConfig(tile_size=4, overlap=0.0, batch_size=2, edge_margin=0),
+        cache_root=tmp_path / "cache",
+    )
+    assert pipeline.cache is not None
+    attempted_keys: list[str] = []
+
+    def failing_save(cache_key: str, predictions: list[BoxPrediction]) -> None:
+        attempted_keys.append(cache_key)
+        raise PermissionError("cache write denied")
+
+    monkeypatch.setattr(pipeline.cache, "save", failing_save)
+
+    with pytest.warns(RuntimeWarning) as warning_records:
+        result = pipeline.run(np.zeros((4, 4, 3), dtype=np.uint8), "save-failure")
+
+    assert isinstance(result, InferenceResult)
+    assert [(item.class_id, item.score) for item in result.detections] == [(2, 0.9)]
+    assert len(attempted_keys) == 1
+    warning_message = str(warning_records[0].message)
+    assert attempted_keys[0] in warning_message
+    assert "PermissionError" in warning_message
+    assert "cache write denied" in warning_message
+    assert detector.calls == [{"count": 1, "confidence": 0.25, "shapes": [(4, 4, 3)]}]
+
+
+def test_inference_pipeline_propagates_non_oserror_from_cache_save(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from xh_detect.pipeline import InferencePipeline
+
+    detector = RecordingDetector([[_prediction(class_id=2, score=0.9)]])
+    pipeline = InferencePipeline(
+        detector=detector,
+        config=PipelineConfig(tile_size=4, overlap=0.0, batch_size=2, edge_margin=0),
+        cache_root=tmp_path / "cache",
+    )
+    assert pipeline.cache is not None
+
+    def failing_save(cache_key: str, predictions: list[BoxPrediction]) -> None:
+        raise ValueError("programming error")
+
+    monkeypatch.setattr(pipeline.cache, "save", failing_save)
+
+    with pytest.raises(ValueError, match="programming error"):
+        pipeline.run(np.zeros((4, 4, 3), dtype=np.uint8), "save-value-error")
+
+    assert detector.calls == [{"count": 1, "confidence": 0.25, "shapes": [(4, 4, 3)]}]
+
+
 def test_inference_pipeline_run_returns_inference_result_dataclass() -> None:
     from xh_detect.pipeline import InferencePipeline
 

@@ -73,6 +73,8 @@ def _validate_prediction(prediction: object) -> BoxPrediction:
 
     if not isinstance(prediction, Mapping):
         raise ValueError("prediction must be a mapping")
+    if set(prediction) != {"class_id", "score", "polygon"}:
+        raise ValueError("prediction fields must be exactly class_id, score, polygon")
 
     class_id = _validate_class_id(prediction.get("class_id"))
     score = _validate_score(prediction.get("score"))
@@ -102,6 +104,8 @@ def _payload_from_predictions(
 def _deserialize_payload(payload: object, *, expected_tile_id: str) -> list[BoxPrediction]:
     if not isinstance(payload, Mapping):
         raise ValueError("cache payload must be a mapping")
+    if set(payload) != {"version", "tile_id", "predictions"}:
+        raise ValueError("cache payload fields must be exactly version, tile_id, predictions")
 
     version = payload.get("version")
     if isinstance(version, bool) or not isinstance(version, int):

@@ -143,6 +143,42 @@ def test_tile_prediction_cache_treats_corrupt_or_invalid_payload_as_miss(
     assert cache.load("tile") is None
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"version": 1, "tile_id": "tile"},
+        {"version": 1, "tile_id": "tile", "predictions": [], "extra": True},
+        {
+            "version": 1,
+            "tile_id": "tile",
+            "predictions": [{"class_id": 1, "score": 0.5}],
+        },
+        {
+            "version": 1,
+            "tile_id": "tile",
+            "predictions": [
+                {
+                    "class_id": 1,
+                    "score": 0.5,
+                    "polygon": [[0, 0], [1, 0], [1, 1], [0, 1]],
+                    "extra": True,
+                }
+            ],
+        },
+    ],
+)
+def test_tile_prediction_cache_requires_exact_payload_and_prediction_fields(
+    tmp_path: Path,
+    payload: dict[str, object],
+) -> None:
+    from xh_detect.cache import TilePredictionCache
+
+    cache = TilePredictionCache(tmp_path / "cache")
+    cache._path_for("tile").write_text(json.dumps(payload), encoding="utf-8")
+
+    assert cache.load("tile") is None
+
+
 def test_tile_prediction_cache_save_rejects_invalid_predictions(tmp_path: Path) -> None:
     from xh_detect.cache import TilePredictionCache
 
