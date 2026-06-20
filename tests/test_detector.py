@@ -98,6 +98,14 @@ class FakeTensor:
         return self._values
 
 
+class FloatLike:
+    def __init__(self, value: float) -> None:
+        self.value = value
+
+    def __float__(self) -> float:
+        return self.value
+
+
 class FakeObb:
     def __init__(self, polygons: object, classes: object, scores: object) -> None:
         self.tensor_calls: list[str] = []
@@ -479,6 +487,128 @@ def test_ultralytics_detector_rejects_invalid_scores(
         ValueError,
         match="result 0 has invalid OBB score at box 0",
     ):
+        detector.predict([np.zeros((4, 4, 3), dtype=np.uint8)], confidence=0.25)
+
+
+@pytest.mark.parametrize(
+    "classes",
+    [
+        np.asarray(["2"]),
+        np.asarray([b"2"]),
+        np.asarray([FloatLike(2.0)], dtype=object),
+        np.asarray([2], dtype=object),
+        np.asarray([2 + 0j]),
+        np.asarray([True]),
+    ],
+)
+def test_ultralytics_detector_rejects_non_real_class_arrays(
+    monkeypatch: pytest.MonkeyPatch,
+    classes: np.ndarray,
+) -> None:
+    from xh_detect import detector as detector_module
+
+    fake_model = FakeModel(
+        [
+            FakeResult(
+                FakeObb(
+                    polygons=[[[1, 2], [3, 2], [3, 4], [1, 4]]],
+                    classes=classes,
+                    scores=[0.5],
+                )
+            )
+        ]
+    )
+    monkeypatch.setattr(detector_module, "YOLO", lambda model_path: fake_model)
+    detector = detector_module.UltralyticsOBBDetector("weights.pt", "cpu", 640, False)
+
+    with pytest.raises(ValueError, match="result 0 has invalid OBB class"):
+        detector.predict([np.zeros((4, 4, 3), dtype=np.uint8)], confidence=0.25)
+
+
+@pytest.mark.parametrize(
+    "scores",
+    [
+        np.asarray(["0.5"]),
+        np.asarray([b"0.5"]),
+        np.asarray([FloatLike(0.5)], dtype=object),
+        np.asarray([0.5], dtype=object),
+        np.asarray([0.5 + 0j]),
+        np.asarray([True]),
+    ],
+)
+def test_ultralytics_detector_rejects_non_real_score_arrays(
+    monkeypatch: pytest.MonkeyPatch,
+    scores: np.ndarray,
+) -> None:
+    from xh_detect import detector as detector_module
+
+    fake_model = FakeModel(
+        [
+            FakeResult(
+                FakeObb(
+                    polygons=[[[1, 2], [3, 2], [3, 4], [1, 4]]],
+                    classes=[0],
+                    scores=scores,
+                )
+            )
+        ]
+    )
+    monkeypatch.setattr(detector_module, "YOLO", lambda model_path: fake_model)
+    detector = detector_module.UltralyticsOBBDetector("weights.pt", "cpu", 640, False)
+
+    with pytest.raises(ValueError, match="result 0 has invalid OBB score"):
+        detector.predict([np.zeros((4, 4, 3), dtype=np.uint8)], confidence=0.25)
+
+
+def test_ultralytics_detector_preserves_int64_max_class_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from xh_detect import detector as detector_module
+
+    max_class_id = np.iinfo(np.int64).max
+    fake_model = FakeModel(
+        [
+            FakeResult(
+                FakeObb(
+                    polygons=[[[1, 2], [3, 2], [3, 4], [1, 4]]],
+                    classes=np.asarray([max_class_id], dtype=np.int64),
+                    scores=[0.5],
+                )
+            )
+        ]
+    )
+    monkeypatch.setattr(detector_module, "YOLO", lambda model_path: fake_model)
+    detector = detector_module.UltralyticsOBBDetector("weights.pt", "cpu", 640, False)
+
+    predictions = detector.predict(
+        [np.zeros((4, 4, 3), dtype=np.uint8)],
+        confidence=0.25,
+    )
+
+    assert predictions[0][0].class_id == max_class_id
+
+
+def test_ultralytics_detector_rejects_class_id_above_int64_max(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from xh_detect import detector as detector_module
+
+    too_large = np.iinfo(np.int64).max + 1
+    fake_model = FakeModel(
+        [
+            FakeResult(
+                FakeObb(
+                    polygons=[[[1, 2], [3, 2], [3, 4], [1, 4]]],
+                    classes=np.asarray([too_large], dtype=np.uint64),
+                    scores=[0.5],
+                )
+            )
+        ]
+    )
+    monkeypatch.setattr(detector_module, "YOLO", lambda model_path: fake_model)
+    detector = detector_module.UltralyticsOBBDetector("weights.pt", "cpu", 640, False)
+
+    with pytest.raises(ValueError, match="result 0 has invalid OBB class at box 0"):
         detector.predict([np.zeros((4, 4, 3), dtype=np.uint8)], confidence=0.25)
 
 

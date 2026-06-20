@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from numbers import Real
+from numbers import Integral, Real
 from typing import Protocol, cast
 
 import numpy as np
@@ -10,6 +10,8 @@ import torch
 from ultralytics import YOLO
 
 from xh_detect.types import BoxPrediction, ImageArray, Polygon4
+
+_INT64_MAX = int(np.iinfo(np.int64).max)
 
 
 class Detector(Protocol):
@@ -70,43 +72,89 @@ def _format_array_value(value: object) -> str:
     return repr(value)
 
 
+def _validate_real_numeric_array(
+    array: np.ndarray,
+    *,
+    result_index: int,
+    field_name: str,
+) -> None:
+    if array.dtype.kind not in {"i", "u", "f"}:
+        raise ValueError(
+            f"result {result_index} has invalid OBB {field_name} values: "
+            "expected a real non-boolean numeric array, "
+            f"got dtype {array.dtype}"
+        )
+
+
+def _is_real_numeric_scalar(value: object) -> bool:
+    return not isinstance(value, (bool, np.bool_)) and isinstance(
+        value,
+        (Real, np.integer, np.floating),
+    )
+
+
 def _validate_class_ids(classes: np.ndarray, *, result_index: int) -> list[int]:
+    _validate_real_numeric_array(
+        classes,
+        result_index=result_index,
+        field_name="class",
+    )
     validated: list[int] = []
     for box_index, class_id in enumerate(classes):
-        try:
-            numeric_class_id = float(class_id)
-        except (TypeError, ValueError, OverflowError):
-            numeric_class_id = math.nan
-        if (
-            isinstance(class_id, (bool, np.bool_))
-            or not math.isfinite(numeric_class_id)
-            or numeric_class_id < 0
-            or not numeric_class_id.is_integer()
-        ):
+        if not _is_real_numeric_scalar(class_id):
             raise ValueError(
                 f"result {result_index} has invalid OBB class at box {box_index}: "
                 "expected a finite non-negative integer, got "
                 f"{_format_array_value(class_id)}"
             )
-        validated.append(int(numeric_class_id))
+
+        if isinstance(class_id, (Integral, np.integer)):
+            validated_class_id = int(class_id)
+            is_valid = 0 <= validated_class_id <= _INT64_MAX
+        else:
+            numeric_class_id = float(class_id)
+            is_valid = (
+                math.isfinite(numeric_class_id)
+                and numeric_class_id >= 0
+                and numeric_class_id.is_integer()
+                and numeric_class_id <= _INT64_MAX
+            )
+            validated_class_id = int(numeric_class_id) if is_valid else 0
+
+        if not is_valid:
+            raise ValueError(
+                f"result {result_index} has invalid OBB class at box {box_index}: "
+                "expected a finite non-negative int64 integer, got "
+                f"{_format_array_value(class_id)}"
+            )
+        validated.append(validated_class_id)
     return validated
 
 
 def _validate_scores(scores: np.ndarray, *, result_index: int) -> list[float]:
+    _validate_real_numeric_array(
+        scores,
+        result_index=result_index,
+        field_name="score",
+    )
     validated: list[float] = []
     for box_index, score in enumerate(scores):
-        try:
-            numeric_score = float(score)
-        except (TypeError, ValueError, OverflowError):
-            numeric_score = math.nan
+        if not _is_real_numeric_scalar(score):
+            raise ValueError(
+                f"result {result_index} has invalid OBB score at box {box_index}: "
+                "expected a finite real value in [0, 1], got "
+                f"{_format_array_value(score)}"
+            )
+
+        numeric_score = float(score)
         if (
-            isinstance(score, (bool, np.bool_))
-            or not math.isfinite(numeric_score)
+            not math.isfinite(numeric_score)
             or not 0.0 <= numeric_score <= 1.0
         ):
             raise ValueError(
                 f"result {result_index} has invalid OBB score at box {box_index}: "
-                f"expected a finite value in [0, 1], got {_format_array_value(score)}"
+                "expected a finite real value in [0, 1], got "
+                f"{_format_array_value(score)}"
             )
         validated.append(numeric_score)
     return validated
