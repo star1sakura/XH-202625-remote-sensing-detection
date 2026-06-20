@@ -1,0 +1,210 @@
+from __future__ import annotations
+
+import math
+from collections.abc import Sequence
+from numbers import Real
+from typing import Protocol, cast
+
+import numpy as np
+import torch
+from ultralytics import YOLO
+
+from xh_detect.types import BoxPrediction, ImageArray, Polygon4
+
+
+class Detector(Protocol):
+    def predict(
+        self, images: list[ImageArray], confidence: float
+    ) -> list[list[BoxPrediction]]:
+        ...
+
+
+def _validate_positive_integer(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+def _validate_non_empty_string(value: object, name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} must be a non-empty string")
+    return value
+
+
+def _validate_bool(value: object, name: str) -> bool:
+    if not isinstance(value, bool):
+        raise TypeError(f"{name} must be a bool")
+    return value
+
+
+def _validate_confidence(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError("confidence must be a finite real number in [0, 1]")
+    confidence = float(value)
+    if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
+        raise ValueError("confidence must be a finite real number in [0, 1]")
+    return confidence
+
+
+def _to_numpy_array(value: object, *, result_index: int, field_name: str) -> np.ndarray:
+    try:
+        return np.asarray(value)
+    except Exception as exc:  # pragma: no cover - defensive conversion guard
+        raise ValueError(
+            f"result {result_index} has invalid OBB {field_name} values"
+        ) from exc
+
+
+def _ensure_finite(array: np.ndarray, *, result_index: int) -> None:
+    try:
+        is_finite = np.isfinite(array).all()
+    except TypeError as exc:
+        raise ValueError(f"result {result_index} contains non-finite OBB values") from exc
+    if not bool(is_finite):
+        raise ValueError(f"result {result_index} contains non-finite OBB values")
+
+
+def _extract_predictions(result: object, *, result_index: int) -> list[BoxPrediction]:
+    obb = getattr(result, "obb", None)
+    if obb is None:
+        return []
+
+    polygons = _to_numpy_array(
+        obb.xyxyxyxy.detach().cpu().numpy(),
+        result_index=result_index,
+        field_name="polygon",
+    )
+    classes = _to_numpy_array(
+        obb.cls.detach().cpu().numpy(),
+        result_index=result_index,
+        field_name="class",
+    ).reshape(-1)
+    scores = _to_numpy_array(
+        obb.conf.detach().cpu().numpy(),
+        result_index=result_index,
+        field_name="score",
+    ).reshape(-1)
+
+    if polygons.ndim != 3 or polygons.shape[1:] != (4, 2):
+        raise ValueError(
+            f"result {result_index} has invalid OBB polygon shape: expected (N, 4, 2), "
+            f"got {polygons.shape}"
+        )
+
+    polygon_count = polygons.shape[0]
+    if polygon_count != len(classes) or polygon_count != len(scores):
+        raise ValueError(
+            "result "
+            f"{result_index} has inconsistent OBB lengths: polygons={polygon_count}, "
+            f"classes={len(classes)}, scores={len(scores)}"
+        )
+
+    _ensure_finite(polygons, result_index=result_index)
+    _ensure_finite(classes, result_index=result_index)
+    _ensure_finite(scores, result_index=result_index)
+
+    predictions: list[BoxPrediction] = []
+    for polygon, class_id, score in zip(polygons, classes, scores, strict=True):
+        points = tuple((float(point[0]), float(point[1])) for point in polygon)
+        predictions.append(
+            BoxPrediction(
+                class_id=int(class_id),
+                score=float(score),
+                polygon=cast(Polygon4, points),
+            )
+        )
+    return predictions
+
+
+def _is_cuda_oom(error: RuntimeError) -> bool:
+    if isinstance(error, torch.cuda.OutOfMemoryError):
+        return True
+
+    message = str(error).lower()
+    return "cuda" in message and "out of memory" in message
+
+
+def _empty_cuda_cache_if_available() -> None:
+    empty_cache = getattr(torch.cuda, "empty_cache", None)
+    if callable(empty_cache):
+        empty_cache()
+
+
+class UltralyticsOBBDetector:
+    def __init__(
+        self,
+        model_path: str,
+        device: str,
+        image_size: int,
+        half: bool,
+    ) -> None:
+        validated_model_path = _validate_non_empty_string(model_path, "model_path")
+        self.device = _validate_non_empty_string(device, "device")
+        self.image_size = _validate_positive_integer(image_size, "image_size")
+        self.half = _validate_bool(half, "half")
+        self.model = YOLO(validated_model_path)
+
+    def predict(
+        self, images: list[ImageArray], confidence: float
+    ) -> list[list[BoxPrediction]]:
+        validated_confidence = _validate_confidence(confidence)
+        results = list(
+            self.model.predict(
+                source=images,
+                imgsz=self.image_size,
+                conf=validated_confidence,
+                device=self.device,
+                half=self.half,
+                verbose=False,
+            )
+        )
+        if len(results) != len(images):
+            raise ValueError(
+                f"Ultralytics returned {len(results)} results for {len(images)} input images"
+            )
+        return [
+            _extract_predictions(result, result_index=index)
+            for index, result in enumerate(results)
+        ]
+
+
+def predict_with_oom_backoff(
+    detector: Detector,
+    images: Sequence[ImageArray],
+    confidence: float,
+    initial_batch_size: int,
+) -> list[list[BoxPrediction]]:
+    validated_confidence = _validate_confidence(confidence)
+    validated_batch_size = _validate_positive_integer(
+        initial_batch_size, "initial_batch_size"
+    )
+    if not images:
+        return []
+
+    predictions: list[list[BoxPrediction]] = []
+    index = 0
+    batch_size = min(validated_batch_size, len(images))
+
+    while index < len(images):
+        chunk = list(images[index : index + batch_size])
+        try:
+            chunk_predictions = detector.predict(chunk, validated_confidence)
+        except RuntimeError as error:
+            if not _is_cuda_oom(error):
+                raise
+            if batch_size == 1:
+                raise
+            batch_size = max(1, batch_size // 2)
+            _empty_cuda_cache_if_available()
+            continue
+
+        if len(chunk_predictions) != len(chunk):
+            raise ValueError(
+                "detector returned "
+                f"{len(chunk_predictions)} results for a chunk of {len(chunk)} images"
+            )
+
+        predictions.extend(chunk_predictions)
+        index += len(chunk)
+
+    return predictions
