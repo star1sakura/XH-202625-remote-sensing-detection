@@ -7,7 +7,7 @@ from typing import cast
 
 import numpy as np
 
-from xh_detect.types import Tile, TileMeta
+from xh_detect.types import ImageArray, Tile, TileMeta
 
 
 def _validate_int(name: str, value: object, *, minimum: int | None = None) -> int:
@@ -49,7 +49,7 @@ def _validate_overlap(overlap: object) -> float:
     return overlap_value
 
 
-def _validate_image(image: object) -> np.ndarray:
+def _validate_image(image: object) -> ImageArray:
     array = np.asarray(image)
     if array.ndim not in (2, 3):
         raise ValueError("image must be a 2D grayscale array or 3D HxWxC array")
@@ -57,17 +57,17 @@ def _validate_image(image: object) -> np.ndarray:
         raise ValueError("image height and width must be positive")
     if array.ndim == 3 and array.shape[2] <= 0:
         raise ValueError("image channel dimension must be positive")
-    return array
+    return cast(ImageArray, array)
 
 
-def _empty_tile_shape(image: np.ndarray, tile_size: int) -> tuple[int, ...]:
+def _empty_tile_shape(image: ImageArray, tile_size: int) -> tuple[int, ...]:
     if image.ndim == 2:
         return (tile_size, tile_size)
     return (tile_size, tile_size, image.shape[2])
 
 
 def _make_tile(
-    image: np.ndarray,
+    image: ImageArray,
     image_id: str,
     tile_size: int,
     x: int,
@@ -93,11 +93,11 @@ def _make_tile(
         valid_width=valid_width,
         valid_height=valid_height,
     )
-    return Tile(image=cast(np.ndarray, tile), meta=meta)
+    return Tile(image=cast(ImageArray, tile), meta=meta)
 
 
 def iter_tiles(
-    image: object,
+    image: ImageArray,
     image_id: str,
     tile_size: int,
     overlap: float,

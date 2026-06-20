@@ -5,7 +5,7 @@ from numpy.typing import NDArray
 
 Point = tuple[float, float]
 Polygon4 = tuple[Point, Point, Point, Point]
-ImageArray = NDArray[np.uint8]
+ImageArray = NDArray[np.generic]
 
 
 @dataclass(frozen=True)
