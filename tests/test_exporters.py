@@ -186,6 +186,71 @@ def test_export_coco_results_rejects_nearby_bboxes_only_when_exact_duplicate(
     assert len(json.loads(destination.read_text(encoding="utf-8"))) == 2
 
 
+@pytest.mark.parametrize(
+    ("polygon", "match"),
+    [
+        (
+            (
+                (0.0, 0.0),
+                (10.0, 10.0),
+                (0.0, 10.0),
+                (10.0, 0.0),
+            ),
+            "scene-1",
+        ),
+        (
+            (
+                (0.0, 0.0),
+                (5.0, 5.0),
+                (10.0, 10.0),
+                (15.0, 15.0),
+            ),
+            "scene-1",
+        ),
+        (
+            (
+                (0.0, 0.0),
+                (1.0, 0.0),
+                (1.0, float("inf")),
+                (0.0, 1.0),
+            ),
+            "scene-1",
+        ),
+    ],
+)
+def test_export_coco_results_rejects_invalid_detection_polygon_and_keeps_existing_file(
+    tmp_path: Path,
+    polygon: tuple[tuple[float, float], ...],
+    match: str,
+) -> None:
+    destination = tmp_path / "results.json"
+    destination.write_text("old content", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=match):
+        export_coco_results([_detection(polygon=polygon)], {"scene-1": 1}, destination)
+
+    assert destination.read_text(encoding="utf-8") == "old content"
+
+
+def test_export_coco_results_accepts_valid_rotated_rectangle(tmp_path: Path) -> None:
+    destination = tmp_path / "results.json"
+    detection = _detection(
+        polygon=(
+            (1.0, 0.0),
+            (3.0, 2.0),
+            (2.0, 3.0),
+            (0.0, 1.0),
+        ),
+    )
+
+    result = export_coco_results([detection], {"scene-1": 7}, destination)
+
+    assert result == destination
+    assert json.loads(destination.read_text(encoding="utf-8")) == [
+        {"image_id": 7, "category_id": 1, "bbox": [0.0, 0.0, 3.0, 3.0], "score": 0.9},
+    ]
+
+
 def test_export_coco_results_uses_atomic_replace_and_keeps_old_file_on_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

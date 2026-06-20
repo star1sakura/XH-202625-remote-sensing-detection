@@ -8,9 +8,13 @@ from collections.abc import Iterable, Mapping
 from contextlib import suppress
 from numbers import Integral, Real
 from pathlib import Path
+from typing import cast
+
+from shapely.errors import GEOSException
+from shapely.geometry import Polygon
 
 from xh_detect.geometry import obb_to_hbb
-from xh_detect.types import Detection
+from xh_detect.types import Detection, Polygon4
 
 _COCO_FIELDS = {"image_id", "category_id", "bbox", "score"}
 
@@ -44,6 +48,55 @@ def _validate_real_number(field_name: str, value: object) -> float:
     if not math.isfinite(numeric_value):
         raise ValueError(f"{field_name} must be a finite real number")
     return numeric_value
+
+
+def _validate_detection_polygon(detection: Detection, index: int) -> Polygon4:
+    try:
+        points = detection.polygon
+    except AttributeError as exc:  # pragma: no cover - defensive guard
+        raise ValueError(
+            f"detection {index} (image_id={detection.image_id!r}) has invalid polygon"
+        ) from exc
+
+    if len(points) != 4:
+        raise ValueError(
+            f"detection {index} (image_id={detection.image_id!r}) has invalid polygon: "
+            "expected exactly 4 points"
+        )
+
+    validated_points: list[tuple[float, float]] = []
+    for point_index, point in enumerate(points):
+        try:
+            x_raw, y_raw = point
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"detection {index} (image_id={detection.image_id!r}) has invalid polygon: "
+                f"point {point_index} is not a 2-item coordinate"
+            ) from exc
+
+        x = _validate_real_number(
+            f"detection {index} (image_id={detection.image_id!r}) polygon[{point_index}][0]",
+            x_raw,
+        )
+        y = _validate_real_number(
+            f"detection {index} (image_id={detection.image_id!r}) polygon[{point_index}][1]",
+            y_raw,
+        )
+        validated_points.append((x, y))
+
+    try:
+        shape = Polygon(validated_points)
+    except GEOSException as exc:
+        raise ValueError(
+            f"detection {index} (image_id={detection.image_id!r}) has invalid polygon"
+        ) from exc
+
+    if shape.is_empty or not shape.is_valid or shape.area <= 0.0:
+        raise ValueError(
+            f"detection {index} (image_id={detection.image_id!r}) has invalid polygon"
+        )
+
+    return cast(Polygon4, tuple(validated_points))
 
 
 def validate_coco_results(records: list[dict[str, object]]) -> None:
@@ -108,8 +161,12 @@ def validate_coco_results(records: list[dict[str, object]]) -> None:
         seen.add(duplicate_key)
 
 
-def _build_record(detection: Detection, image_id: int) -> dict[str, object]:
-    xmin, ymin, xmax, ymax = obb_to_hbb(detection.polygon)
+def _build_record(
+    detection: Detection,
+    image_id: int,
+    polygon: Polygon4,
+) -> dict[str, object]:
+    xmin, ymin, xmax, ymax = obb_to_hbb(polygon)
     bbox = [xmin, ymin, xmax - xmin, ymax - ymin]
     return {
         "image_id": image_id,
@@ -156,12 +213,13 @@ def export_coco_results(
 
     validated_map = _validate_map(image_id_map)
     records = []
-    for detection in detections:
+    for index, detection in enumerate(detections):
         try:
             image_id = validated_map[detection.image_id]
         except KeyError as exc:
             raise ValueError(f"unknown image_id {detection.image_id!r}") from exc
-        records.append(_build_record(detection, image_id))
+        polygon = _validate_detection_polygon(detection, index)
+        records.append(_build_record(detection, image_id, polygon))
 
     validate_coco_results(records)
     _write_json_atomic(destination, records)
