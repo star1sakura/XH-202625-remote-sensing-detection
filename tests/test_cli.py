@@ -246,3 +246,29 @@ def test_infer_command_uses_shared_pipeline_and_writes_outputs(
     imwrite.assert_called_once()
     export_results.assert_called_once()
     assert json.loads(result.stdout)["total_s"] == 0.6
+
+
+@patch("xh_detect.cli.build_app")
+def test_serve_command_launches_gradio(build_app: Mock, tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text("config", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "serve",
+            "--config-path",
+            str(config),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "7861",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    build_app.assert_called_once_with(config)
+    build_app.return_value.launch.assert_called_once_with(
+        server_name="127.0.0.1",
+        server_port=7861,
+    )

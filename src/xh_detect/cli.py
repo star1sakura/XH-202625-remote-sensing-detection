@@ -56,6 +56,12 @@ def _write_json(path: Path, payload: object) -> None:
     )
 
 
+def build_app(config_path: Path):
+    from xh_detect.app import build_app as build_gradio_app
+
+    return build_gradio_app(config_path)
+
+
 @app.command("prepare-dota")
 def prepare_dota(
     source_root: Annotated[
@@ -205,6 +211,18 @@ def sweep_thresholds_command(
     ]
     _write_json(output_path, payload)
     typer.echo(str(output_path))
+
+
+@app.command()
+def serve(
+    config_path: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False),
+    ] = Path("configs/baseline.yaml"),
+    host: Annotated[str, typer.Option()] = "0.0.0.0",
+    port: Annotated[int, typer.Option(min=1, max=65535)] = 7860,
+) -> None:
+    build_app(config_path).launch(server_name=host, server_port=port)
 
 
 if __name__ == "__main__":
