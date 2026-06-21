@@ -272,3 +272,53 @@ def test_serve_command_launches_gradio(build_app: Mock, tmp_path: Path) -> None:
         server_name="127.0.0.1",
         server_port=7861,
     )
+
+
+@patch(
+    "xh_detect.cli.benchmark_pipeline",
+    return_value={"median_s": 1.2, "p95_s": 1.5},
+)
+@patch("xh_detect.cli.create_synthetic_image")
+@patch("xh_detect.cli.InferencePipeline")
+@patch("xh_detect.cli.UltralyticsOBBDetector")
+@patch("xh_detect.cli.PipelineConfig.from_yaml")
+@patch("xh_detect.cli.cv2.imread")
+def test_benchmark_command_creates_missing_image_and_prints_json(
+    imread: Mock,
+    from_yaml: Mock,
+    detector_class: Mock,
+    pipeline_class: Mock,
+    create_image: Mock,
+    benchmark_pipeline: Mock,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    image_path = tmp_path / "synthetic.png"
+    config_path.write_text("config", encoding="utf-8")
+    image = np.zeros((8, 8, 3), dtype=np.uint8)
+    imread.return_value = image
+    from_yaml.return_value = PipelineConfig(device="cpu", half=False)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "benchmark",
+            "--config-path",
+            str(config_path),
+            "--image-path",
+            str(image_path),
+            "--repeats",
+            "3",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    create_image.assert_called_once_with(image_path)
+    pipeline_class.assert_called_once()
+    benchmark_pipeline.assert_called_once_with(
+        pipeline_class.return_value,
+        image,
+        "synthetic",
+        3,
+    )
+    assert json.loads(result.stdout) == {"median_s": 1.2, "p95_s": 1.5}

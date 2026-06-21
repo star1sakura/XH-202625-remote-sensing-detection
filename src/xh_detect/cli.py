@@ -62,6 +62,23 @@ def build_app(config_path: Path):
     return build_gradio_app(config_path)
 
 
+def create_synthetic_image(destination: Path):
+    from xh_detect.benchmark import create_synthetic_image as create_image
+
+    return create_image(destination)
+
+
+def benchmark_pipeline(
+    pipeline: InferencePipeline,
+    image,
+    image_id: str,
+    repeats: int,
+):
+    from xh_detect.benchmark import benchmark_pipeline as run_benchmark
+
+    return run_benchmark(pipeline, image, image_id, repeats)
+
+
 @app.command("prepare-dota")
 def prepare_dota(
     source_root: Annotated[
@@ -223,6 +240,34 @@ def serve(
     port: Annotated[int, typer.Option(min=1, max=65535)] = 7860,
 ) -> None:
     build_app(config_path).launch(server_name=host, server_port=port)
+
+
+@app.command()
+def benchmark(
+    config_path: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False),
+    ] = Path("configs/baseline.yaml"),
+    image_path: Annotated[Path, typer.Option()] = Path(
+        "outputs/benchmark/synthetic-10000.png"
+    ),
+    repeats: Annotated[int, typer.Option(min=1)] = 5,
+) -> None:
+    if not image_path.exists():
+        create_synthetic_image(image_path)
+    image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+    if image is None:
+        raise typer.BadParameter(f"cannot read benchmark image: {image_path}")
+    config = PipelineConfig.from_yaml(config_path)
+    detector = UltralyticsOBBDetector(
+        config.model_path,
+        config.device,
+        config.image_size,
+        config.half,
+    )
+    pipeline = InferencePipeline(detector, config, cache_root=None)
+    summary = benchmark_pipeline(pipeline, image, image_path.stem, repeats)
+    typer.echo(json.dumps(summary, allow_nan=False))
 
 
 if __name__ == "__main__":
