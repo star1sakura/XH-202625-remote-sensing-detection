@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from pathlib import Path
 from uuid import uuid4
 
 import cv2
+
+os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+
 import gradio as gr
 
 from xh_detect.config import PipelineConfig

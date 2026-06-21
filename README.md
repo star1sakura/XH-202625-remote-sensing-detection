@@ -31,26 +31,28 @@ Ultralytics `dota8.yaml` 完成服务器、训练和推理冒烟。
 python -m pip install uv==0.11.23
 git clone <your-repository-url> xh-detect
 cd xh-detect
-uv sync --extra dev
-uv run xh-detect version
-uv run xh-detect env
+bash scripts/bootstrap_gpu_server.sh
+.venv/bin/xh-detect version
+.venv/bin/xh-detect env
 ```
 
 `env` 输出应包含 Python、PyTorch、Ultralytics、CUDA 和 GPU 型号。4090
-服务器上 `cuda_available` 应为 `true`。
+服务器上 `cuda_available` 应为 `true`。这个脚本会复用镜像预装的 CUDA
+PyTorch，防止依赖解析器下载另一套 PyTorch/CUDA。普通 CPU 开发机仍可使用
+`uv sync --extra dev`。
 
 ## 3. 无正式数据时的快速检查
 
 不下载权重、不需要 GPU 的完整假检测器闭环：
 
 ```bash
-uv run pytest tests/test_e2e.py -v
+.venv/bin/python -m pytest tests/test_e2e.py -v
 ```
 
 可联网时运行 Ultralytics 的一轮 OBB 冒烟训练：
 
 ```bash
-uv run yolo obb train \
+.venv/bin/yolo obb train \
   model=yolo26s-obb.pt \
   data=dota8.yaml \
   epochs=1 \
@@ -78,7 +80,7 @@ datasets/DOTA-v1.5/
 转换为飞机、舰船、车辆三类：
 
 ```bash
-uv run xh-detect prepare-dota \
+.venv/bin/xh-detect prepare-dota \
   --source-root datasets/DOTA-v1.5 \
   --output-root datasets/dota3
 ```
@@ -100,7 +102,7 @@ datasets/dota3/
 ## 5. 三类基线训练
 
 ```bash
-uv run xh-detect train \
+.venv/bin/xh-detect train \
   --dataset-yaml datasets/dota3/dataset.yaml \
   --model yolo26s-obb.pt \
   --epochs 30 \
@@ -125,7 +127,7 @@ runs/train/baseline/
 编辑 [configs/baseline.yaml](configs/baseline.yaml) 中的 `model_path`，然后：
 
 ```bash
-uv run xh-detect infer \
+.venv/bin/xh-detect infer \
   --image-path datasets/DOTA-v1.5/images/val/P0003.png \
   --config-path configs/baseline.yaml \
   --output-dir outputs/infer
@@ -144,12 +146,12 @@ uv run xh-detect infer \
 ## 7. 比赛规则评估与阈值扫描
 
 ```bash
-uv run xh-detect evaluate \
+.venv/bin/xh-detect evaluate \
   --predictions-json outputs/infer/P0003.json \
   --ground-truth-json datasets/demo-ground-truth.json \
   --output-path outputs/evaluation/P0003-report.json
 
-uv run xh-detect sweep-thresholds \
+.venv/bin/xh-detect sweep-thresholds \
   --predictions-json outputs/infer/P0003.json \
   --ground-truth-json datasets/demo-ground-truth.json \
   --output-path outputs/evaluation/P0003-threshold-sweep.json
@@ -161,7 +163,7 @@ uv run xh-detect sweep-thresholds \
 ## 8. Gradio Demo
 
 ```bash
-uv run xh-detect serve \
+.venv/bin/xh-detect serve \
   --config-path configs/baseline.yaml \
   --host 0.0.0.0 \
   --port 7860
@@ -182,7 +184,7 @@ Demo 默认限制单并发，避免同一 GPU 同时运行多个大图任务。
 PyTorch FP16：
 
 ```bash
-uv run xh-detect benchmark \
+.venv/bin/xh-detect benchmark \
   --config-path configs/baseline.yaml \
   --repeats 5 | tee outputs/benchmark/pytorch-fp16.json
 ```
@@ -193,12 +195,12 @@ uv run xh-detect benchmark \
 TensorRT FP16：
 
 ```bash
-uv run xh-detect export-engine \
+.venv/bin/xh-detect export-engine \
   --model-path runs/train/baseline/weights/best.pt \
   --image-size 1024 \
   --device 0
 
-uv run xh-detect benchmark \
+.venv/bin/xh-detect benchmark \
   --config-path configs/tensorrt.yaml \
   --repeats 5 | tee outputs/benchmark/tensorrt-fp16.json
 ```
@@ -208,19 +210,19 @@ uv run xh-detect benchmark \
 ## 10. 质量检查
 
 ```bash
-uv run ruff format --check .
-uv run ruff check .
-uv run pytest
-uv run pytest --cov=xh_detect --cov-report=term-missing
+.venv/bin/python -m ruff format --check .
+.venv/bin/python -m ruff check .
+.venv/bin/python -m pytest
+.venv/bin/python -m pytest --cov=xh_detect --cov-report=term-missing
 ```
 
 GPU、权重下载和 DOTA 数据不进入本地单元测试。提交前还应在干净服务器执行：
 
 ```bash
-uv sync --extra dev
-uv run xh-detect env
-uv run pytest
-uv run yolo obb predict \
+bash scripts/bootstrap_gpu_server.sh
+.venv/bin/xh-detect env
+.venv/bin/python -m pytest
+.venv/bin/yolo obb predict \
   model=yolo26s-obb.pt \
   source=https://ultralytics.com/images/boats.jpg \
   imgsz=1024 \
