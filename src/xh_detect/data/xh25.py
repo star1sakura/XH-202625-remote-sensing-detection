@@ -71,16 +71,13 @@ def _line_error(path: Path, line_number: int, message: str) -> ValueError:
     return ValueError(f"{path}:{line_number}: {message}")
 
 
-def parse_yolo_hbb_label(
+def _read_normalized_hbb(
     path: Path,
-    image_id: str,
-    width: int,
-    height: int,
-) -> tuple[ObjectAnnotation, ...]:
-    if width <= 0 or height <= 0:
-        raise _line_error(path, 0, "width and height must be positive")
-
-    annotations: list[ObjectAnnotation] = []
+    *,
+    width: int | None = None,
+    height: int | None = None,
+) -> tuple[tuple[int, float, float, float, float], ...]:
+    boxes: list[tuple[int, float, float, float, float]] = []
     for line_number, line in enumerate(
         path.read_text(encoding="utf-8-sig").splitlines(),
         start=1,
@@ -105,30 +102,57 @@ def parse_yolo_hbb_label(
         coordinates = (x_center, y_center, box_width, box_height)
         if not all(math.isfinite(value) for value in coordinates):
             raise _line_error(path, line_number, "coordinates must be finite")
+        if box_width <= 0.0 or box_height <= 0.0:
+            raise _line_error(
+                path,
+                line_number,
+                "bounding box width and height must be positive",
+            )
         if not (
             0.0 <= x_center <= 1.0
             and 0.0 <= y_center <= 1.0
-            and 0.0 < box_width <= 1.0
-            and 0.0 < box_height <= 1.0
+            and box_width <= 1.0
+            and box_height <= 1.0
         ):
             raise _line_error(path, line_number, "bounding box is outside image")
 
-        left = (x_center - box_width / 2.0) * width
-        right = (x_center + box_width / 2.0) * width
-        top = (y_center - box_height / 2.0) * height
-        bottom = (y_center + box_height / 2.0) * height
+        scale_width = 1.0 if width is None else width
+        scale_height = 1.0 if height is None else height
+        left = (x_center - box_width / 2.0) * scale_width
+        right = (x_center + box_width / 2.0) * scale_width
+        top = (y_center - box_height / 2.0) * scale_height
+        bottom = (y_center + box_height / 2.0) * scale_height
         if (
             left < -_BOUNDARY_TOLERANCE
             or top < -_BOUNDARY_TOLERANCE
-            or right > width + _BOUNDARY_TOLERANCE
-            or bottom > height + _BOUNDARY_TOLERANCE
+            or right > scale_width + _BOUNDARY_TOLERANCE
+            or bottom > scale_height + _BOUNDARY_TOLERANCE
         ):
             raise _line_error(path, line_number, "bounding box is outside image")
+        boxes.append((class_id, x_center, y_center, box_width, box_height))
 
-        left = max(0.0, left)
-        top = max(0.0, top)
-        right = min(float(width), right)
-        bottom = min(float(height), bottom)
+    return tuple(boxes)
+
+
+def parse_yolo_hbb_label(
+    path: Path,
+    image_id: str,
+    width: int,
+    height: int,
+) -> tuple[ObjectAnnotation, ...]:
+    if width <= 0 or height <= 0:
+        raise _line_error(path, 0, "width and height must be positive")
+
+    annotations: list[ObjectAnnotation] = []
+    for class_id, x_center, y_center, box_width, box_height in _read_normalized_hbb(
+        path,
+        width=width,
+        height=height,
+    ):
+        left = max(0.0, (x_center - box_width / 2.0) * width)
+        right = min(float(width), (x_center + box_width / 2.0) * width)
+        top = max(0.0, (y_center - box_height / 2.0) * height)
+        bottom = min(float(height), (y_center + box_height / 2.0) * height)
         polygon: Polygon4 = (
             (left, top),
             (right, top),
@@ -178,19 +202,31 @@ def audit_dataset(source_root: Path) -> DatasetAudit:
     for stem in sorted(image_paths.keys() & label_paths.keys()):
         image_path = image_paths[stem]
         label_path = label_paths[stem]
+        image_details: tuple[int, int, str, str] | None = None
         try:
             with Image.open(image_path) as image:
                 image.load()
                 width, height = image.size
                 if width <= 0 or height <= 0:
                     errors.append(f"{image_path}: width and height must be positive")
-                    continue
-                mode = str(image.mode)
-                perceptual_hash = _average_hash(image)
+                else:
+                    image_details = (
+                        width,
+                        height,
+                        str(image.mode),
+                        _average_hash(image),
+                    )
         except (OSError, UnidentifiedImageError) as error:
             errors.append(f"{image_path}: damaged image: {error}")
+
+        if image_details is None:
+            try:
+                _read_normalized_hbb(label_path)
+            except (OSError, UnicodeError, ValueError) as error:
+                errors.append(str(error))
             continue
 
+        width, height, mode, perceptual_hash = image_details
         try:
             annotations = parse_yolo_hbb_label(
                 label_path,

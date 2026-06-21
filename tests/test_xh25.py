@@ -59,6 +59,16 @@ def test_parse_rejects_non_positive_image_dimensions(
     assert str(label_path) in str(error.value)
 
 
+def test_parse_rejects_non_positive_height_parameter(tmp_path: Path) -> None:
+    label_path = tmp_path / "height.txt"
+    _write_label(label_path, "0 0.5 0.5 0.2 0.2\n")
+
+    with pytest.raises(ValueError, match="width and height must be positive") as error:
+        parse_yolo_hbb_label(label_path, "height", 100, -1)
+
+    assert f"{label_path}:0" in str(error.value)
+
+
 @pytest.mark.parametrize(
     ("line", "message"),
     [
@@ -70,7 +80,10 @@ def test_parse_rejects_non_positive_image_dimensions(
         ("0 0.5 inf 0.2 0.2", "finite"),
         ("0 1.1 0.5 0.2 0.2", "outside image"),
         ("0 0.5 -0.1 0.2 0.2", "outside image"),
-        ("0 0.5 0.5 0 0.2", "outside image"),
+        ("0 0.5 0.5 0 0.2", "width and height must be positive"),
+        ("0 0.5 0.5 -0.1 0.2", "width and height must be positive"),
+        ("0 0.5 0.5 0.2 0", "width and height must be positive"),
+        ("0 0.5 0.5 0.2 -0.1", "width and height must be positive"),
         ("0 0.5 0.5 1.1 0.2", "outside image"),
         ("0 0.1 0.5 0.4 0.2", "outside image"),
     ],
@@ -168,6 +181,25 @@ def test_audit_dataset_aggregates_pairing_image_and_label_errors(tmp_path: Path)
     assert "missing_image" in error_message
     assert str(broken_image) in error_message
     assert f"{invalid_label}:1" in error_message
+    assert "class ID 25" in error_message
+
+
+def test_audit_dataset_checks_invalid_label_when_paired_image_is_damaged(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "dataset"
+    image_path = source_root / "images" / "train" / "same.jpg"
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    image_path.write_bytes(b"not a jpeg")
+    label_path = source_root / "labels" / "train" / "same.txt"
+    _write_label(label_path, "25 0.5 0.5 0.2 0.2\n")
+
+    with pytest.raises(ValueError) as error:
+        audit_dataset(source_root)
+
+    error_message = str(error.value)
+    assert f"{image_path}: damaged image" in error_message
+    assert f"{label_path}:1" in error_message
     assert "class ID 25" in error_message
 
 
