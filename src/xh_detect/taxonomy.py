@@ -82,18 +82,20 @@ XH25_NAMES = {
 
 LEGACY3_NAMES = {0: "aircraft", 1: "ship", 2: "vehicle"}
 
-_TAXONOMIES = MappingProxyType({
-    "legacy3": Taxonomy("legacy3", LEGACY3_NAMES, LEGACY3_NAMES),
-    "xh25": Taxonomy(
-        "xh25",
-        XH25_NAMES,
-        {
-            **dict.fromkeys(range(4), "ship"),
-            **dict.fromkeys(range(4, 24), "aircraft"),
-            24: "vehicle",
-        },
-    ),
-})
+_TAXONOMIES = MappingProxyType(
+    {
+        "legacy3": Taxonomy("legacy3", LEGACY3_NAMES, LEGACY3_NAMES),
+        "xh25": Taxonomy(
+            "xh25",
+            XH25_NAMES,
+            {
+                **dict.fromkeys(range(4), "ship"),
+                **dict.fromkeys(range(4, 24), "aircraft"),
+                24: "vehicle",
+            },
+        ),
+    }
+)
 
 
 def get_taxonomy(key: str) -> Taxonomy:
