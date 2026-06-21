@@ -1,9 +1,16 @@
+import json
 from importlib import metadata, reload
+from pathlib import Path
+from unittest.mock import Mock, patch
 
+import numpy as np
 from typer.testing import CliRunner
 
 import xh_detect
 from xh_detect.cli import app
+from xh_detect.config import PipelineConfig
+from xh_detect.data.dota import ConversionStats
+from xh_detect.types import InferenceResult, StageTimings
 
 
 def test_package_version_comes_from_distribution_metadata(monkeypatch) -> None:
@@ -24,3 +31,218 @@ def test_version_command() -> None:
 
     assert result.exit_code == 0
     assert result.stdout.strip() == "xh-detect 0.1.0"
+
+
+@patch("xh_detect.cli.write_dataset_yaml")
+@patch("xh_detect.cli.convert_split")
+def test_prepare_dota_command_converts_train_and_val(
+    convert_split: Mock,
+    write_dataset_yaml: Mock,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    output = tmp_path / "converted"
+    for relative in [
+        Path("images/train"),
+        Path("images/val"),
+        Path("labelTxt/train"),
+        Path("labelTxt/val"),
+    ]:
+        (source / relative).mkdir(parents=True)
+    convert_split.side_effect = [
+        ConversionStats(2, {0: 1, 1: 0, 2: 3}, 0, 0),
+        ConversionStats(1, {0: 0, 1: 1, 2: 0}, 1, 0),
+    ]
+    write_dataset_yaml.return_value = output / "dataset.yaml"
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "prepare-dota",
+            "--source-root",
+            str(source),
+            "--output-root",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert [call.args[-1] for call in convert_split.call_args_list] == ["train", "val"]
+    write_dataset_yaml.assert_called_once_with(output)
+    payload = json.loads(result.stdout)
+    assert payload["train"]["targets"] == {"0": 1, "1": 0, "2": 3}
+    assert payload["dataset_yaml"].endswith("dataset.yaml")
+
+
+def test_prepare_dota_command_rejects_incomplete_source_layout(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+
+    result = CliRunner().invoke(
+        app,
+        ["prepare-dota", "--source-root", str(source)],
+    )
+
+    assert result.exit_code != 0
+    assert "missing directories" in result.output
+
+
+@patch("xh_detect.cli.train_model")
+def test_train_command_calls_wrapper(train_model: Mock, tmp_path: Path) -> None:
+    dataset = tmp_path / "dataset.yaml"
+    dataset.write_text("names: {}", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        ["train", "--dataset-yaml", str(dataset), "--epochs", "2"],
+    )
+
+    assert result.exit_code == 0, result.output
+    train_model.assert_called_once_with(
+        str(dataset),
+        "yolo26s-obb.pt",
+        2,
+        1024,
+        "0",
+    )
+
+
+@patch("xh_detect.cli.export_tensorrt", return_value="model.engine")
+def test_export_engine_command_prints_path(export_tensorrt: Mock) -> None:
+    result = CliRunner().invoke(
+        app,
+        ["export-engine", "--model-path", "best.pt", "--image-size", "640"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.strip() == "model.engine"
+    export_tensorrt.assert_called_once_with("best.pt", 640, "0")
+
+
+@patch("xh_detect.cli.report_to_dict", return_value={"overall": {"recall": 1.0}})
+@patch("xh_detect.cli.evaluate_detections")
+@patch("xh_detect.cli.load_coco_ground_truth", return_value=[])
+@patch("xh_detect.cli.load_coco_predictions", return_value=[])
+def test_evaluate_command_writes_report(
+    load_predictions: Mock,
+    load_truth: Mock,
+    evaluate_detections: Mock,
+    report_to_dict: Mock,
+    tmp_path: Path,
+) -> None:
+    predictions = tmp_path / "predictions.json"
+    truth = tmp_path / "truth.json"
+    output = tmp_path / "report.json"
+    predictions.write_text("[]", encoding="utf-8")
+    truth.write_text('{"annotations":[]}', encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "evaluate",
+            "--predictions-json",
+            str(predictions),
+            "--ground-truth-json",
+            str(truth),
+            "--output-path",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(output.read_text(encoding="utf-8")) == {
+        "overall": {"recall": 1.0}
+    }
+    load_predictions.assert_called_once_with(predictions)
+    load_truth.assert_called_once_with(truth)
+    evaluate_detections.assert_called_once_with([], [])
+    report_to_dict.assert_called_once()
+
+
+@patch("xh_detect.cli.threshold_sweep")
+@patch("xh_detect.cli.load_coco_ground_truth", return_value=[])
+@patch("xh_detect.cli.load_coco_predictions", return_value=[])
+def test_sweep_thresholds_command_writes_json(
+    load_predictions: Mock,
+    load_truth: Mock,
+    threshold_sweep: Mock,
+    tmp_path: Path,
+) -> None:
+    predictions = tmp_path / "predictions.json"
+    truth = tmp_path / "truth.json"
+    output = tmp_path / "sweep.json"
+    predictions.write_text("[]", encoding="utf-8")
+    truth.write_text('{"annotations":[]}', encoding="utf-8")
+    threshold_sweep.return_value = []
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "sweep-thresholds",
+            "--predictions-json",
+            str(predictions),
+            "--ground-truth-json",
+            str(truth),
+            "--output-path",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(output.read_text(encoding="utf-8")) == []
+    thresholds = threshold_sweep.call_args.args[2]
+    assert thresholds[0] == 0.05
+    assert thresholds[-1] == 0.95
+
+
+@patch("xh_detect.cli.export_coco_results")
+@patch("xh_detect.cli.draw_detections")
+@patch("xh_detect.cli.InferencePipeline")
+@patch("xh_detect.cli.UltralyticsOBBDetector")
+@patch("xh_detect.cli.PipelineConfig.from_yaml")
+@patch("xh_detect.cli.cv2.imwrite", return_value=True)
+@patch("xh_detect.cli.cv2.imread")
+def test_infer_command_uses_shared_pipeline_and_writes_outputs(
+    imread: Mock,
+    imwrite: Mock,
+    from_yaml: Mock,
+    detector_class: Mock,
+    pipeline_class: Mock,
+    draw_detections: Mock,
+    export_results: Mock,
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "scene.png"
+    config_path = tmp_path / "config.yaml"
+    output_dir = tmp_path / "output"
+    image_path.write_bytes(b"image")
+    config_path.write_text("config", encoding="utf-8")
+    image = np.zeros((8, 8, 3), dtype=np.uint8)
+    imread.return_value = image
+    draw_detections.return_value = image
+    config = PipelineConfig(model_path="model.pt", device="cpu", half=False)
+    from_yaml.return_value = config
+    pipeline_class.return_value.run.return_value = InferenceResult(
+        detections=(),
+        timings=StageTimings(0.1, 0.2, 0.3, 0.6),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "infer",
+            "--image-path",
+            str(image_path),
+            "--config-path",
+            str(config_path),
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    detector_class.assert_called_once_with("model.pt", "cpu", 1024, False)
+    pipeline_class.return_value.run.assert_called_once_with(image, "scene")
+    imwrite.assert_called_once()
+    export_results.assert_called_once()
+    assert json.loads(result.stdout)["total_s"] == 0.6
