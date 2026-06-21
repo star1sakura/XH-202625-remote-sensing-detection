@@ -98,12 +98,10 @@ def keep_tile_prediction(
     touches_left_internal = meta.x > 0 and xmin < margin_value
     touches_top_internal = meta.y > 0 and ymin < margin_value
     touches_right_internal = (
-        meta.x + meta.valid_width < image_width
-        and xmax > float(meta.valid_width) - margin_value
+        meta.x + meta.valid_width < image_width and xmax > float(meta.valid_width) - margin_value
     )
     touches_bottom_internal = (
-        meta.y + meta.valid_height < image_height
-        and ymax > float(meta.valid_height) - margin_value
+        meta.y + meta.valid_height < image_height and ymax > float(meta.valid_height) - margin_value
     )
     return not (
         touches_left_internal
@@ -141,7 +139,4 @@ def merge_detections(
                     survivors.append((candidate_index, candidate))
             remaining = survivors
 
-    return [
-        detection
-        for _, detection in sorted(kept, key=lambda item: (-item[1].score, item[0]))
-    ]
+    return [detection for _, detection in sorted(kept, key=lambda item: (-item[1].score, item[0]))]

@@ -27,9 +27,7 @@ class RecordingDetector:
         self.outputs = outputs
         self.calls: list[dict[str, object]] = []
 
-    def predict(
-        self, images: list[np.ndarray], confidence: float
-    ) -> list[list[BoxPrediction]]:
+    def predict(self, images: list[np.ndarray], confidence: float) -> list[list[BoxPrediction]]:
         self.calls.append(
             {
                 "count": len(images),
@@ -44,9 +42,7 @@ class PixelDrivenDetector:
     def __init__(self) -> None:
         self.calls: list[tuple[int, float]] = []
 
-    def predict(
-        self, images: list[np.ndarray], confidence: float
-    ) -> list[list[BoxPrediction]]:
+    def predict(self, images: list[np.ndarray], confidence: float) -> list[list[BoxPrediction]]:
         self.calls.append((len(images), confidence))
         results: list[list[BoxPrediction]] = []
         for image in images:
@@ -59,9 +55,7 @@ class FailingDetector:
     def __init__(self) -> None:
         self.calls = 0
 
-    def predict(
-        self, images: list[np.ndarray], confidence: float
-    ) -> list[list[BoxPrediction]]:
+    def predict(self, images: list[np.ndarray], confidence: float) -> list[list[BoxPrediction]]:
         self.calls += 1
         raise RuntimeError("detector failed")
 
@@ -92,9 +86,7 @@ def test_inference_pipeline_runs_single_tile_and_reports_timings() -> None:
     assert result.timings.inference_s >= 0.0
     assert result.timings.postprocess_s >= 0.0
     assert result.timings.total_s + 1e-9 >= (
-        result.timings.preprocess_s
-        + result.timings.inference_s
-        + result.timings.postprocess_s
+        result.timings.preprocess_s + result.timings.inference_s + result.timings.postprocess_s
     )
 
 

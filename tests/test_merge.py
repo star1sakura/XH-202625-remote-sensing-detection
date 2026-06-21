@@ -213,39 +213,48 @@ def test_keep_tile_prediction_distinguishes_internal_and_outer_edges(
     margin: int,
     expected: bool,
 ) -> None:
-    assert keep_tile_prediction(
-        prediction,
-        meta,
-        image_width=256,
-        image_height=256,
-        margin=margin,
-    ) is expected
+    assert (
+        keep_tile_prediction(
+            prediction,
+            meta,
+            image_width=256,
+            image_height=256,
+            margin=margin,
+        )
+        is expected
+    )
 
 
 def test_keep_tile_prediction_rejects_padded_center() -> None:
     prediction = _prediction(polygon=((84.0, 10.0), (95.0, 10.0), (95.0, 30.0), (84.0, 30.0)))
     meta = TileMeta("scene", "tile", 0, 0, 128, 128, 80, 80)
 
-    assert keep_tile_prediction(
-        prediction,
-        meta,
-        image_width=256,
-        image_height=256,
-        margin=16,
-    ) is False
+    assert (
+        keep_tile_prediction(
+            prediction,
+            meta,
+            image_width=256,
+            image_height=256,
+            margin=16,
+        )
+        is False
+    )
 
 
 def test_keep_tile_prediction_margin_zero_only_checks_center() -> None:
     prediction = _prediction(polygon=((0.0, 10.0), (20.0, 10.0), (20.0, 30.0), (0.0, 30.0)))
     meta = TileMeta("scene", "tile", 64, 0, 128, 128, 64, 128)
 
-    assert keep_tile_prediction(
-        prediction,
-        meta,
-        image_width=256,
-        image_height=256,
-        margin=0,
-    ) is True
+    assert (
+        keep_tile_prediction(
+            prediction,
+            meta,
+            image_width=256,
+            image_height=256,
+            margin=0,
+        )
+        is True
+    )
 
 
 def test_merge_detections_suppresses_same_class_duplicate_and_keeps_other_classes() -> None:

@@ -100,9 +100,7 @@ def _validate_detection(item: Detection, index: int) -> None:
     _validate_score(item.score, f"prediction {index}")
     coordinates = [coordinate for point in item.polygon for coordinate in point]
     if len(coordinates) != 8 or not all(
-        isinstance(value, Real)
-        and not isinstance(value, bool)
-        and math.isfinite(float(value))
+        isinstance(value, Real) and not isinstance(value, bool) and math.isfinite(float(value))
         for value in coordinates
     ):
         raise ValueError(f"prediction {index} polygon must contain four finite points")
@@ -114,9 +112,7 @@ def _validate_truth(item: ObjectAnnotation, index: int) -> None:
     _validate_class_id(item.class_id, f"ground truth {index}")
     coordinates = [coordinate for point in item.polygon for coordinate in point]
     if len(coordinates) != 8 or not all(
-        isinstance(value, Real)
-        and not isinstance(value, bool)
-        and math.isfinite(float(value))
+        isinstance(value, Real) and not isinstance(value, bool) and math.isfinite(float(value))
         for value in coordinates
     ):
         raise ValueError(f"ground truth {index} polygon must contain four finite points")
@@ -286,7 +282,6 @@ def report_to_dict(report: EvaluationReport) -> dict[str, object]:
             for class_id, metrics in sorted(report.by_class.items())
         },
         "by_image": {
-            image_id: metrics_dict(metrics)
-            for image_id, metrics in sorted(report.by_image.items())
+            image_id: metrics_dict(metrics) for image_id, metrics in sorted(report.by_image.items())
         },
     }

@@ -92,9 +92,7 @@ def _validate_detection_polygon(detection: Detection, index: int) -> Polygon4:
         ) from exc
 
     if shape.is_empty or not shape.is_valid or shape.area <= 0.0:
-        raise ValueError(
-            f"detection {index} (image_id={detection.image_id!r}) has invalid polygon"
-        )
+        raise ValueError(f"detection {index} (image_id={detection.image_id!r}) has invalid polygon")
 
     return cast(Polygon4, tuple(validated_points))
 

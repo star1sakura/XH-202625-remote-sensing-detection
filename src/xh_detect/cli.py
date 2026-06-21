@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import platform
 from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated
 
 import cv2
+import torch
 import typer
+import ultralytics
 
 from xh_detect import __version__
 from xh_detect.config import PipelineConfig
@@ -96,8 +99,7 @@ def prepare_dota(
     missing = [str(path) for path in required_directories if not path.is_dir()]
     if missing:
         raise typer.BadParameter(
-            "DOTA source layout is incomplete; missing directories: "
-            + ", ".join(missing)
+            "DOTA source layout is incomplete; missing directories: " + ", ".join(missing)
         )
     train_stats = convert_split(
         source_root / "images" / "train",
@@ -193,9 +195,7 @@ def evaluate_command(
         Path,
         typer.Option(exists=True, dir_okay=False),
     ],
-    output_path: Annotated[Path, typer.Option()] = Path(
-        "outputs/evaluation/report.json"
-    ),
+    output_path: Annotated[Path, typer.Option()] = Path("outputs/evaluation/report.json"),
 ) -> None:
     predictions = load_coco_predictions(predictions_json)
     truth = load_coco_ground_truth(ground_truth_json)
@@ -215,9 +215,7 @@ def sweep_thresholds_command(
         Path,
         typer.Option(exists=True, dir_okay=False),
     ],
-    output_path: Annotated[Path, typer.Option()] = Path(
-        "outputs/evaluation/threshold-sweep.json"
-    ),
+    output_path: Annotated[Path, typer.Option()] = Path("outputs/evaluation/threshold-sweep.json"),
 ) -> None:
     predictions = load_coco_predictions(predictions_json)
     truth = load_coco_ground_truth(ground_truth_json)
@@ -248,9 +246,7 @@ def benchmark(
         Path,
         typer.Option(exists=True, dir_okay=False),
     ] = Path("configs/baseline.yaml"),
-    image_path: Annotated[Path, typer.Option()] = Path(
-        "outputs/benchmark/synthetic-10000.png"
-    ),
+    image_path: Annotated[Path, typer.Option()] = Path("outputs/benchmark/synthetic-10000.png"),
     repeats: Annotated[int, typer.Option(min=1)] = 5,
 ) -> None:
     if not image_path.exists():
@@ -268,6 +264,21 @@ def benchmark(
     pipeline = InferencePipeline(detector, config, cache_root=None)
     summary = benchmark_pipeline(pipeline, image, image_path.stem, repeats)
     typer.echo(json.dumps(summary, allow_nan=False))
+
+
+@app.command()
+def env() -> None:
+    cuda_available = bool(torch.cuda.is_available())
+    payload = {
+        "python": platform.python_version(),
+        "platform": platform.platform(),
+        "torch": str(torch.__version__),
+        "ultralytics": str(ultralytics.__version__),
+        "cuda_available": cuda_available,
+        "cuda_version": torch.version.cuda,
+        "gpu": torch.cuda.get_device_name(0) if cuda_available else None,
+    }
+    typer.echo(json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False))
 
 
 if __name__ == "__main__":

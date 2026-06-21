@@ -66,9 +66,7 @@ def _validate_image(image: object) -> ImageArray:
     if array.ndim == 3 and array.shape[2] <= 0:
         raise ValueError("image channel dimension must be positive")
     if array.dtype.type not in SUPPORTED_IMAGE_DTYPES:
-        raise TypeError(
-            "image dtype must be one of uint8, uint16, int16, float32, or float64"
-        )
+        raise TypeError("image dtype must be one of uint8, uint16, int16, float32, or float64")
     return cast(ImageArray, array)
 
 
@@ -92,9 +90,7 @@ def _validate_pad_value(pad_value: object, dtype: np.dtype) -> np.generic:
         else:
             float_value = float(pad_value)
             if not math.isfinite(float_value) or not float_value.is_integer():
-                raise ValueError(
-                    "pad_value must be a finite integer for integer image dtype"
-                )
+                raise ValueError("pad_value must be a finite integer for integer image dtype")
             integer_value = int(float_value)
 
         limits = np.iinfo(dtype)
@@ -104,9 +100,7 @@ def _validate_pad_value(pad_value: object, dtype: np.dtype) -> np.generic:
 
     is_finite = _is_finite_real(pad_value)
     if is_finite and abs(pad_value) > np.finfo(dtype).max:
-        raise ValueError(
-            f"pad_value overflows finite range of image dtype {dtype}"
-        )
+        raise ValueError(f"pad_value overflows finite range of image dtype {dtype}")
     try:
         converted = dtype.type(pad_value)
     except (OverflowError, TypeError, ValueError) as exc:

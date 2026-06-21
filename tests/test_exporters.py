@@ -77,9 +77,7 @@ def test_validate_coco_results_accepts_strict_records() -> None:
         ),
     ],
 )
-def test_validate_coco_results_rejects_bad_records(
-    record: dict[str, object], match: str
-) -> None:
+def test_validate_coco_results_rejects_bad_records(record: dict[str, object], match: str) -> None:
     with pytest.raises((TypeError, ValueError), match=match):
         validate_coco_results([record])
 
@@ -126,7 +124,7 @@ def test_export_coco_results_preserves_order_and_writes_unicode_json(tmp_path: P
     assert result == destination
     payload = destination.read_text(encoding="utf-8")
     assert "结果" in str(destination)
-    assert payload.startswith("[\n  {\n    \"image_id\": 10")
+    assert payload.startswith('[\n  {\n    "image_id": 10')
     assert "\n  }\n]" in payload
     assert json.loads(payload) == [
         {"image_id": 10, "category_id": 2, "bbox": [10.0, 20.0, 20.0, 30.0], "score": 0.95},

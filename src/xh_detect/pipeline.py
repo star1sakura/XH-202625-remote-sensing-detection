@@ -172,8 +172,7 @@ class InferencePipeline:
                         self.cache.save(cache_key, predictions)
                     except OSError as exc:
                         warnings.warn(
-                            f"failed to save cache key {cache_key!r}: "
-                            f"{type(exc).__name__}: {exc}",
+                            f"failed to save cache key {cache_key!r}: {type(exc).__name__}: {exc}",
                             RuntimeWarning,
                             stacklevel=2,
                         )

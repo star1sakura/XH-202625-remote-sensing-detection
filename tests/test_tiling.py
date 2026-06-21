@@ -116,9 +116,7 @@ def test_iter_tiles_rejects_non_numeric_or_boolean_scalar_pad_value(pad_value) -
 def test_iter_tiles_accepts_ordinary_float_conversion_to_float32() -> None:
     image = np.ones((1, 1), dtype=np.float32)
 
-    tile = next(
-        iter_tiles(image, "float-pad", tile_size=2, overlap=0.0, pad_value=0.1)
-    )
+    tile = next(iter_tiles(image, "float-pad", tile_size=2, overlap=0.0, pad_value=0.1))
 
     assert tile.image[1, 1] == np.float32(0.1)
 
@@ -150,9 +148,7 @@ def test_iter_tiles_accepts_negative_int16_pad_value() -> None:
 def test_iter_tiles_allows_non_finite_pad_value_for_float_dtype(pad_value) -> None:
     image = np.ones((1, 1), dtype=np.float32)
 
-    tile = next(
-        iter_tiles(image, "float-pad", tile_size=2, overlap=0.0, pad_value=pad_value)
-    )
+    tile = next(iter_tiles(image, "float-pad", tile_size=2, overlap=0.0, pad_value=pad_value))
 
     padded = tile.image[1, 1]
     if math.isnan(pad_value):

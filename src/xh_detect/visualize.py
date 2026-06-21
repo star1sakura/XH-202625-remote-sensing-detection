@@ -32,9 +32,7 @@ def _validate_polygon(polygon: object) -> Polygon4:
     if len(points) != 4 or any(len(point) != 2 for point in points):
         raise ValueError("detection polygon must contain four finite points")
     if not all(
-        isinstance(value, Real)
-        and not isinstance(value, bool)
-        and math.isfinite(float(value))
+        isinstance(value, Real) and not isinstance(value, bool) and math.isfinite(float(value))
         for point in points
         for value in point
     ):

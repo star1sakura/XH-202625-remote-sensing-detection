@@ -150,9 +150,7 @@ def test_evaluate_command_writes_report(
     )
 
     assert result.exit_code == 0, result.output
-    assert json.loads(output.read_text(encoding="utf-8")) == {
-        "overall": {"recall": 1.0}
-    }
+    assert json.loads(output.read_text(encoding="utf-8")) == {"overall": {"recall": 1.0}}
     load_predictions.assert_called_once_with(predictions)
     load_truth.assert_called_once_with(truth)
     evaluate_detections.assert_called_once_with([], [])
@@ -322,3 +320,22 @@ def test_benchmark_command_creates_missing_image_and_prints_json(
         3,
     )
     assert json.loads(result.stdout) == {"median_s": 1.2, "p95_s": 1.5}
+
+
+@patch("xh_detect.cli.torch.cuda.get_device_name")
+@patch("xh_detect.cli.torch.cuda.is_available", return_value=False)
+def test_env_command_reports_cpu(
+    cuda_available: Mock,
+    get_device_name: Mock,
+) -> None:
+    result = CliRunner().invoke(app, ["env"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["cuda_available"] is False
+    assert payload["gpu"] is None
+    assert payload["python"]
+    assert payload["torch"]
+    assert payload["ultralytics"]
+    cuda_available.assert_called_once_with()
+    get_device_name.assert_not_called()

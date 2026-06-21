@@ -116,9 +116,7 @@ def test_coco_loaders_validate_and_use_numeric_ids_as_strings(tmp_path: Path) ->
     predictions_path = tmp_path / "predictions.json"
     truth_path = tmp_path / "truth.json"
     predictions_path.write_text(
-        json.dumps(
-            [{"image_id": 7, "category_id": 0, "bbox": [0, 0, 10, 10], "score": 0.9}]
-        ),
+        json.dumps([{"image_id": 7, "category_id": 0, "bbox": [0, 0, 10, 10], "score": 0.9}]),
         encoding="utf-8",
     )
     truth_path.write_text(

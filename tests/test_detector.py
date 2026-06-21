@@ -13,9 +13,7 @@ class OomAboveTwoDetector:
     def __init__(self) -> None:
         self.batch_sizes: list[int] = []
 
-    def predict(
-        self, images: list[np.ndarray], confidence: float
-    ) -> list[list[BoxPrediction]]:
+    def predict(self, images: list[np.ndarray], confidence: float) -> list[list[BoxPrediction]]:
         self.batch_sizes.append(len(images))
         assert confidence == 0.25
         if len(images) > 2:
@@ -33,9 +31,7 @@ class OomAboveTwoDetector:
 
 
 class AlwaysCudaOomDetector:
-    def predict(
-        self, images: list[np.ndarray], confidence: float
-    ) -> list[list[BoxPrediction]]:
+    def predict(self, images: list[np.ndarray], confidence: float) -> list[list[BoxPrediction]]:
         raise RuntimeError("CUDA out of memory")
 
 
@@ -43,9 +39,7 @@ class CpuOomDetector:
     def __init__(self) -> None:
         self.calls = 0
 
-    def predict(
-        self, images: list[np.ndarray], confidence: float
-    ) -> list[list[BoxPrediction]]:
+    def predict(self, images: list[np.ndarray], confidence: float) -> list[list[BoxPrediction]]:
         self.calls += 1
         raise RuntimeError("CPU out of memory")
 
@@ -54,17 +48,13 @@ class GenericRuntimeErrorDetector:
     def __init__(self) -> None:
         self.calls = 0
 
-    def predict(
-        self, images: list[np.ndarray], confidence: float
-    ) -> list[list[BoxPrediction]]:
+    def predict(self, images: list[np.ndarray], confidence: float) -> list[list[BoxPrediction]]:
         self.calls += 1
         raise RuntimeError("some other runtime failure")
 
 
 class WrongLengthDetector:
-    def predict(
-        self, images: list[np.ndarray], confidence: float
-    ) -> list[list[BoxPrediction]]:
+    def predict(self, images: list[np.ndarray], confidence: float) -> list[list[BoxPrediction]]:
         return []
 
 
@@ -72,9 +62,7 @@ class NeverCalledDetector:
     def __init__(self) -> None:
         self.called = False
 
-    def predict(
-        self, images: list[np.ndarray], confidence: float
-    ) -> list[list[BoxPrediction]]:
+    def predict(self, images: list[np.ndarray], confidence: float) -> list[list[BoxPrediction]]:
         self.called = True
         return []
 
@@ -220,10 +208,7 @@ def test_oom_backoff_retries_with_smaller_batches_and_preserves_order(
     )
 
     detector = OomAboveTwoDetector()
-    images = [
-        np.full((8, 8, 3), fill_value=index, dtype=np.uint8)
-        for index in range(5)
-    ]
+    images = [np.full((8, 8, 3), fill_value=index, dtype=np.uint8) for index in range(5)]
 
     results = detector_module.predict_with_oom_backoff(
         detector=detector,
@@ -263,9 +248,7 @@ def test_oom_backoff_recognizes_torch_cuda_oom_error(monkeypatch: pytest.MonkeyP
         def __init__(self) -> None:
             self.batch_sizes: list[int] = []
 
-        def predict(
-            self, images: list[np.ndarray], confidence: float
-        ) -> list[list[BoxPrediction]]:
+        def predict(self, images: list[np.ndarray], confidence: float) -> list[list[BoxPrediction]]:
             self.batch_sizes.append(len(images))
             if len(images) > 1:
                 raise torch.cuda.OutOfMemoryError("CUDA out of memory")
@@ -324,12 +307,15 @@ def test_empty_input_returns_empty_without_calling_detector() -> None:
 
     detector = NeverCalledDetector()
 
-    assert predict_with_oom_backoff(
-        detector=detector,
-        images=[],
-        confidence=0.25,
-        initial_batch_size=4,
-    ) == []
+    assert (
+        predict_with_oom_backoff(
+            detector=detector,
+            images=[],
+            confidence=0.25,
+            initial_batch_size=4,
+        )
+        == []
+    )
     assert detector.called is False
 
 

@@ -79,10 +79,7 @@ def benchmark_pipeline(
         raise ValueError("image_id must be a non-empty string")
 
     pipeline.run(image, f"{image_id}-warmup")
-    timings = [
-        pipeline.run(image, f"{image_id}-{index}").timings
-        for index in range(repeats)
-    ]
+    timings = [pipeline.run(image, f"{image_id}-{index}").timings for index in range(repeats)]
     summary = summarize_durations(_stage_values(timings, "total_s"))
     for attribute, prefix in (
         ("preprocess_s", "preprocess"),

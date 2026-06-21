@@ -88,18 +88,14 @@ def test_tile_prediction_cache_uses_hashed_filenames_inside_root(tmp_path: Path)
             {
                 "version": 1,
                 "tile_id": "tile",
-                "predictions": [
-                    {"class_id": True, "score": 0.5, "polygon": [[0, 0]] * 4}
-                ],
+                "predictions": [{"class_id": True, "score": 0.5, "polygon": [[0, 0]] * 4}],
             }
         ),
         json.dumps(
             {
                 "version": 1,
                 "tile_id": "tile",
-                "predictions": [
-                    {"class_id": 1, "score": 1.5, "polygon": [[0, 0]] * 4}
-                ],
+                "predictions": [{"class_id": 1, "score": 1.5, "polygon": [[0, 0]] * 4}],
             }
         ),
         json.dumps(

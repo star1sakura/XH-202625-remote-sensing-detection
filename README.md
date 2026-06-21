@@ -1,0 +1,251 @@
+# XH-202625 遥感目标检测 Demo
+
+面向飞机、舰船、车辆三类光学遥感目标的比赛基线。项目提供 DOTA-v1.5
+数据转换、YOLO26s-OBB 训练、超大图滑窗推理、跨切片合并、COCO JSON
+导出、比赛规则评估、Gradio Demo 和 10,000×10,000 性能基准。
+
+当前代码闭环已完成；正式比赛数据尚未开放时，可先使用 DOTA-v1.5 或
+Ultralytics `dota8.yaml` 完成服务器、训练和推理冒烟。
+
+## 1. 目标与指标
+
+比赛初赛关注：
+
+- 三类合并 Recall 不低于 85%；
+- 三类合并 FDR 不高于 20%；
+- 10,000×10,000 图像单幅处理时间不超过 20 秒；
+- 飞机、舰船匹配 IoU 阈值为 0.50，车辆为 0.35。
+
+本仓库第一阶段目标是形成可复现、可测试、可展示的基线，不承诺在未获得正式
+数据和指定评测硬件前达到上述指标。
+
+## 2. 推荐服务器环境
+
+- Ubuntu 22.04；
+- Python 3.11（支持 3.11–3.12）；
+- NVIDIA RTX 4090 24GB；
+- CUDA 驱动与 PyTorch 版本兼容；
+- 至少 80GB 可用磁盘空间。
+
+```bash
+python -m pip install uv==0.11.23
+git clone <your-repository-url> xh-detect
+cd xh-detect
+uv sync --extra dev
+uv run xh-detect version
+uv run xh-detect env
+```
+
+`env` 输出应包含 Python、PyTorch、Ultralytics、CUDA 和 GPU 型号。4090
+服务器上 `cuda_available` 应为 `true`。
+
+## 3. 无正式数据时的快速检查
+
+不下载权重、不需要 GPU 的完整假检测器闭环：
+
+```bash
+uv run pytest tests/test_e2e.py -v
+```
+
+可联网时运行 Ultralytics 的一轮 OBB 冒烟训练：
+
+```bash
+uv run yolo obb train \
+  model=yolo26s-obb.pt \
+  data=dota8.yaml \
+  epochs=1 \
+  imgsz=640 \
+  device=0
+```
+
+该命令会下载公开样例数据和预训练权重。
+
+## 4. DOTA-v1.5 数据准备
+
+从 [DOTA 官方页面](https://captain-whu.github.io/DOTA/dataset.html) 获取
+train、val 图像和 `labelTxt-v1.5`，整理为：
+
+```text
+datasets/DOTA-v1.5/
+├── images/
+│   ├── train/
+│   └── val/
+└── labelTxt/
+    ├── train/
+    └── val/
+```
+
+转换为飞机、舰船、车辆三类：
+
+```bash
+uv run xh-detect prepare-dota \
+  --source-root datasets/DOTA-v1.5 \
+  --output-root datasets/dota3
+```
+
+输出：
+
+```text
+datasets/dota3/
+├── dataset.yaml
+├── images/train
+├── images/val
+├── labels/train
+└── labels/val
+```
+
+转换器保留无目标图像作为负样本，跳过损坏图像和 `difficult=1` 标注，并报告
+无效标注数量。
+
+## 5. 三类基线训练
+
+```bash
+uv run xh-detect train \
+  --dataset-yaml datasets/dota3/dataset.yaml \
+  --model yolo26s-obb.pt \
+  --epochs 30 \
+  --image-size 1024 \
+  --device 0
+```
+
+默认结果目录：
+
+```text
+runs/train/baseline/
+└── weights/
+    ├── best.pt
+    └── last.pt
+```
+
+训练参数固定 `seed=42` 和 `deterministic=true`。正式冲榜前应记录数据版本、
+代码 commit、配置、最佳权重和训练曲线。
+
+## 6. 单图与超大图推理
+
+编辑 [configs/baseline.yaml](configs/baseline.yaml) 中的 `model_path`，然后：
+
+```bash
+uv run xh-detect infer \
+  --image-path datasets/DOTA-v1.5/images/val/P0003.png \
+  --config-path configs/baseline.yaml \
+  --output-dir outputs/infer
+```
+
+输出包括：
+
+- 标注后的 JPG；
+- 经过严格校验的 COCO Detection JSON；
+- 预处理、推理、后处理和总耗时 JSON；
+- `outputs/infer/cache/` 下的可恢复切片缓存。
+
+流水线会自动滑窗、补边、按类别阈值过滤、过滤内部切片边缘碎片、回映坐标并做
+同类旋转框 NMS。CUDA OOM 时会自动降低 batch size。
+
+## 7. 比赛规则评估与阈值扫描
+
+```bash
+uv run xh-detect evaluate \
+  --predictions-json outputs/infer/P0003.json \
+  --ground-truth-json datasets/demo-ground-truth.json \
+  --output-path outputs/evaluation/P0003-report.json
+
+uv run xh-detect sweep-thresholds \
+  --predictions-json outputs/infer/P0003.json \
+  --ground-truth-json datasets/demo-ground-truth.json \
+  --output-path outputs/evaluation/P0003-threshold-sweep.json
+```
+
+评估器按置信度降序执行一对一贪心匹配，重复预测计 FP，并输出整体、分类别和
+分图 TP、FP、FN、Recall、FDR。
+
+## 8. Gradio Demo
+
+```bash
+uv run xh-detect serve \
+  --config-path configs/baseline.yaml \
+  --host 0.0.0.0 \
+  --port 7860
+```
+
+在租赁平台映射 7860 端口。页面支持：
+
+- 上传普通图或超大图；
+- OBB/HBB 显示切换；
+- 三类目标计数和四阶段耗时；
+- 下载 COCO Detection JSON；
+- 可选上传当前图像的 COCO 真值并显示 Recall/FDR。
+
+Demo 默认限制单并发，避免同一 GPU 同时运行多个大图任务。
+
+## 9. 10,000×10,000 性能基准
+
+PyTorch FP16：
+
+```bash
+uv run xh-detect benchmark \
+  --config-path configs/baseline.yaml \
+  --repeats 5 | tee outputs/benchmark/pytorch-fp16.json
+```
+
+首次执行会生成 `outputs/benchmark/synthetic-10000.png`。计时在图像已加载到
+内存后开始，先预热一次，再输出总耗时及预处理、推理、后处理的 median/P95。
+
+TensorRT FP16：
+
+```bash
+uv run xh-detect export-engine \
+  --model-path runs/train/baseline/weights/best.pt \
+  --image-size 1024 \
+  --device 0
+
+uv run xh-detect benchmark \
+  --config-path configs/tensorrt.yaml \
+  --repeats 5 | tee outputs/benchmark/tensorrt-fp16.json
+```
+
+不要使用切片缓存做正式速度验收；benchmark 命令已关闭缓存。
+
+## 10. 质量检查
+
+```bash
+uv run ruff format --check .
+uv run ruff check .
+uv run pytest
+uv run pytest --cov=xh_detect --cov-report=term-missing
+```
+
+GPU、权重下载和 DOTA 数据不进入本地单元测试。提交前还应在干净服务器执行：
+
+```bash
+uv sync --extra dev
+uv run xh-detect env
+uv run pytest
+uv run yolo obb predict \
+  model=yolo26s-obb.pt \
+  source=https://ultralytics.com/images/boats.jpg \
+  imgsz=1024 \
+  device=0
+```
+
+## 11. 一周推进建议
+
+1. 第 1 天：4090 环境、DOTA8 冒烟、DOTA-v1.5 转换；
+2. 第 2 天：30 epoch 三类基线并检查错误样本；
+3. 第 3 天：普通图/大图 Demo 与阈值初扫；
+4. 第 4 天：hard negatives、数据增强和分类别阈值；
+5. 第 5 天：TensorRT 与 10k 性能优化；
+6. 第 6 天：正式数据适配、消融和稳定性；
+7. 第 7 天：最终权重、基准、Demo、提交 JSON 复核。
+
+一天完成两到三天的计划量是可行的，但 GPU 训练、数据下载和错误分析存在串行
+依赖。应以“可验证产物”推进，而不是只累计代码量。
+
+## 12. 许可与数据使用
+
+- DOTA 图像来自 Google Earth、卫星和航拍来源，使用前阅读
+  [DOTA 数据说明](https://captain-whu.github.io/DOTA/dataset.html)及各图像来源条款；
+- Ultralytics YOLO26 OBB 文档见
+  [官方 OBB 指南](https://docs.ultralytics.com/tasks/obb/)；
+- Ultralytics 代码和模型提供 AGPL-3.0 与 Enterprise 许可选项，商业或闭源使用前
+  阅读[官方许可说明](https://docs.ultralytics.com/)；
+- 比赛正式数据、模型权重、训练产物和输出结果不要提交到公开仓库，除非许可明确允许。

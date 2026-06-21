@@ -15,10 +15,7 @@ _INT64_MAX = int(np.iinfo(np.int64).max)
 
 
 class Detector(Protocol):
-    def predict(
-        self, images: list[ImageArray], confidence: float
-    ) -> list[list[BoxPrediction]]:
-        ...
+    def predict(self, images: list[ImageArray], confidence: float) -> list[list[BoxPrediction]]: ...
 
 
 def _validate_positive_integer(value: object, name: str) -> int:
@@ -52,9 +49,7 @@ def _to_numpy_array(value: object, *, result_index: int, field_name: str) -> np.
     try:
         return np.asarray(value)
     except Exception as exc:  # pragma: no cover - defensive conversion guard
-        raise ValueError(
-            f"result {result_index} has invalid OBB {field_name} values"
-        ) from exc
+        raise ValueError(f"result {result_index} has invalid OBB {field_name} values") from exc
 
 
 def _ensure_finite(array: np.ndarray, *, result_index: int) -> None:
@@ -147,10 +142,7 @@ def _validate_scores(scores: np.ndarray, *, result_index: int) -> list[float]:
             )
 
         numeric_score = float(score)
-        if (
-            not math.isfinite(numeric_score)
-            or not 0.0 <= numeric_score <= 1.0
-        ):
+        if not math.isfinite(numeric_score) or not 0.0 <= numeric_score <= 1.0:
             raise ValueError(
                 f"result {result_index} has invalid OBB score at box {box_index}: "
                 "expected a finite real value in [0, 1], got "
@@ -245,9 +237,7 @@ class UltralyticsOBBDetector:
         self.half = _validate_bool(half, "half")
         self.model = YOLO(validated_model_path)
 
-    def predict(
-        self, images: list[ImageArray], confidence: float
-    ) -> list[list[BoxPrediction]]:
+    def predict(self, images: list[ImageArray], confidence: float) -> list[list[BoxPrediction]]:
         validated_confidence = _validate_confidence(confidence)
         if not images:
             return []
@@ -266,8 +256,7 @@ class UltralyticsOBBDetector:
                 f"Ultralytics returned {len(results)} results for {len(images)} input images"
             )
         return [
-            _extract_predictions(result, result_index=index)
-            for index, result in enumerate(results)
+            _extract_predictions(result, result_index=index) for index, result in enumerate(results)
         ]
 
 
@@ -278,9 +267,7 @@ def predict_with_oom_backoff(
     initial_batch_size: int,
 ) -> list[list[BoxPrediction]]:
     validated_confidence = _validate_confidence(confidence)
-    validated_batch_size = _validate_positive_integer(
-        initial_batch_size, "initial_batch_size"
-    )
+    validated_batch_size = _validate_positive_integer(initial_batch_size, "initial_batch_size")
     if not images:
         return []
 
