@@ -168,11 +168,17 @@ def _build_record(
 ) -> dict[str, object]:
     xmin, ymin, xmax, ymax = obb_to_hbb(polygon)
     bbox = [xmin, ymin, xmax - xmin, ymax - ymin]
+    category_id: object = detection.class_id
+    if _is_non_bool_integral(category_id):
+        category_id = int(category_id)
+    score: object = detection.score
+    if not isinstance(score, bool) and isinstance(score, Real):
+        score = float(score)
     return {
         "image_id": image_id,
-        "category_id": detection.class_id,
+        "category_id": category_id,
         "bbox": bbox,
-        "score": detection.score,
+        "score": score,
     }
 
 

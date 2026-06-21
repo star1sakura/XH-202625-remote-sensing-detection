@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from xh_detect.exporters import export_coco_results, validate_coco_results
@@ -131,6 +132,22 @@ def test_export_coco_results_preserves_order_and_writes_unicode_json(tmp_path: P
         {"image_id": 10, "category_id": 2, "bbox": [10.0, 20.0, 20.0, 30.0], "score": 0.95},
         {"image_id": 11, "category_id": 0, "bbox": [-3.0, 1.0, 7.0, 7.0], "score": 0.5},
     ]
+
+
+def test_export_coco_results_normalizes_numpy_scalars_for_json(tmp_path: Path) -> None:
+    destination = tmp_path / "numpy-scalars.json"
+    detection = _detection(
+        image_id="scene-1",
+        class_id=np.int64(2),  # type: ignore[arg-type]
+        score=np.float32(0.75),  # type: ignore[arg-type]
+    )
+
+    export_coco_results([detection], {"scene-1": np.int64(7)}, destination)
+
+    records = json.loads(destination.read_text(encoding="utf-8"))
+    assert records[0]["image_id"] == 7
+    assert records[0]["category_id"] == 2
+    assert records[0]["score"] == pytest.approx(0.75)
 
 
 def test_export_coco_results_accepts_generator_and_empty_input(tmp_path: Path) -> None:
