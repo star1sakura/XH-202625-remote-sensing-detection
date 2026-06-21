@@ -3,6 +3,7 @@ from types import MappingProxyType
 
 import pytest
 
+import xh_detect.taxonomy as taxonomy_module
 from xh_detect.taxonomy import Taxonomy, get_taxonomy
 
 
@@ -59,9 +60,40 @@ def test_unknown_taxonomy_raises_value_error() -> None:
         get_taxonomy("unknown")
 
 
+def test_canonical_taxonomy_registry_is_private_and_read_only() -> None:
+    assert not hasattr(taxonomy_module, "TAXONOMIES")
+
+    registry = taxonomy_module._TAXONOMIES
+    with pytest.raises(TypeError):
+        registry["xh25"] = get_taxonomy("legacy3")
+
+
 def test_unknown_class_id_raises_value_error() -> None:
     with pytest.raises(ValueError):
         get_taxonomy("xh25").coarse_name(25)
+
+
+@pytest.mark.parametrize("key", ["", " ", 0])
+def test_taxonomy_rejects_invalid_keys(key: object) -> None:
+    with pytest.raises(ValueError):
+        Taxonomy(key, {0: "aircraft"}, {0: "aircraft"})
+
+
+def test_taxonomy_rejects_empty_mappings() -> None:
+    with pytest.raises(ValueError):
+        Taxonomy("empty", {}, {})
+
+
+@pytest.mark.parametrize("class_id", [False, 0.0])
+def test_taxonomy_rejects_bool_and_non_integer_ids(class_id: object) -> None:
+    with pytest.raises(ValueError):
+        Taxonomy("invalid-id", {class_id: "aircraft"}, {class_id: "aircraft"})
+
+
+@pytest.mark.parametrize("class_id", [True, 0.0])
+def test_coarse_name_rejects_bool_and_non_integer_ids(class_id: object) -> None:
+    with pytest.raises(ValueError):
+        get_taxonomy("xh25").coarse_name(class_id)
 
 
 def test_taxonomy_copies_input_mappings_into_read_only_proxies() -> None:

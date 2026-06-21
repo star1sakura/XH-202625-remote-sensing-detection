@@ -12,13 +12,23 @@ class Taxonomy:
     coarse_by_id: Mapping[int, str]
 
     def __post_init__(self) -> None:
+        if not isinstance(self.key, str) or not self.key.strip():
+            raise ValueError("taxonomy key must be a non-empty string")
+
         names = dict(self.names)
         coarse_by_id = dict(self.coarse_by_id)
         name_ids = set(names)
         coarse_ids = set(coarse_by_id)
 
+        if not names or not coarse_by_id:
+            raise ValueError("taxonomy mappings must be non-empty")
         if name_ids != coarse_ids:
             raise ValueError("names and coarse IDs must match")
+        if any(
+            isinstance(class_id, bool) or not isinstance(class_id, int)
+            for class_id in name_ids | coarse_ids
+        ):
+            raise ValueError("taxonomy IDs must be integers")
         if name_ids != set(range(len(names))):
             raise ValueError("taxonomy IDs must be contiguous from 0")
         if any(not isinstance(name, str) or not name.strip() for name in names.values()):
@@ -34,6 +44,8 @@ class Taxonomy:
         return frozenset(self.names)
 
     def coarse_name(self, class_id: int) -> str:
+        if isinstance(class_id, bool) or not isinstance(class_id, int):
+            raise ValueError(f"invalid class ID: {class_id!r}")
         try:
             return self.coarse_by_id[class_id]
         except KeyError:
@@ -70,7 +82,7 @@ XH25_NAMES = {
 
 LEGACY3_NAMES = {0: "aircraft", 1: "ship", 2: "vehicle"}
 
-TAXONOMIES = {
+_TAXONOMIES = MappingProxyType({
     "legacy3": Taxonomy("legacy3", LEGACY3_NAMES, LEGACY3_NAMES),
     "xh25": Taxonomy(
         "xh25",
@@ -81,11 +93,11 @@ TAXONOMIES = {
             24: "vehicle",
         },
     ),
-}
+})
 
 
 def get_taxonomy(key: str) -> Taxonomy:
     try:
-        return TAXONOMIES[key]
+        return _TAXONOMIES[key]
     except KeyError:
         raise ValueError(f"unknown taxonomy: {key}") from None
