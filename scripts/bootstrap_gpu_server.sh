@@ -15,7 +15,11 @@ print(f"base gpu={torch.cuda.get_device_name(0)}")
 PY
 
 "${PYTHON_BIN}" -m pip install --disable-pip-version-check "uv==${UV_VERSION}"
-uv venv --python "$(command -v "${PYTHON_BIN}")" --system-site-packages "${VENV_DIR}"
+if [[ -x "${VENV_DIR}/bin/python" ]]; then
+  echo "Reusing existing virtual environment: ${VENV_DIR}"
+else
+  uv venv --python "$(command -v "${PYTHON_BIN}")" --system-site-packages "${VENV_DIR}"
+fi
 
 export UV_LINK_MODE="${UV_LINK_MODE:-copy}"
 
