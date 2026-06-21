@@ -1,3 +1,4 @@
+from dataclasses import FrozenInstanceError
 from types import MappingProxyType
 
 import pytest
@@ -8,6 +9,7 @@ from xh_detect.taxonomy import Taxonomy, get_taxonomy
 def test_xh25_taxonomy_matches_official_classes_and_coarse_groups() -> None:
     taxonomy = get_taxonomy("xh25")
 
+    assert isinstance(taxonomy.valid_ids, frozenset)
     assert taxonomy.valid_ids == frozenset(range(25))
     assert taxonomy.names == {
         0: "HM",
@@ -74,6 +76,13 @@ def test_taxonomy_copies_input_mappings_into_read_only_proxies() -> None:
     assert isinstance(taxonomy.coarse_by_id, MappingProxyType)
     assert taxonomy.names[0] == "aircraft"
     assert taxonomy.coarse_name(0) == "aircraft"
+
+
+def test_taxonomy_fields_are_frozen() -> None:
+    taxonomy = get_taxonomy("xh25")
+
+    with pytest.raises(FrozenInstanceError):
+        taxonomy.key = "changed"
 
 
 @pytest.mark.parametrize(
