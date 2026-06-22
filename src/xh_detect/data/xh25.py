@@ -102,6 +102,14 @@ class PreparedDataset:
         )
 
 
+@dataclass
+class _ValidationSearchFrame:
+    selected: frozenset[str]
+    class_id: int
+    candidates: tuple[str, ...]
+    next_index: int = 0
+
+
 def source_group_id(stem: str) -> str:
     group_id = _CROP_SUFFIX.sub("", stem)
     return group_id or stem
@@ -458,6 +466,121 @@ def _reset_split_directories(source_root: Path, output_root: Path) -> None:
         directory.mkdir(parents=True, exist_ok=True)
 
 
+def _select_validation_groups(
+    class_groups: Mapping[int, set[str]],
+    group_classes: Mapping[str, set[int]],
+    val_ratio: float,
+    seed: int,
+) -> frozenset[str]:
+    required_val_groups: dict[int, int] = {}
+    class_group_counts: dict[int, int] = {}
+    for class_id in range(25):
+        groups = class_groups[class_id]
+        group_count = len(groups)
+        if group_count < 2:
+            raise ValueError(
+                f"class {class_id} requires at least 2 source groups; "
+                f"found {group_count} source groups"
+            )
+        class_group_counts[class_id] = group_count
+        minimum = 2 if group_count >= 3 else 1
+        required_val_groups[class_id] = max(
+            minimum,
+            min(group_count - 1, round(group_count * val_ratio)),
+        )
+
+    ranked_class_groups = {
+        class_id: tuple(
+            sorted(
+                groups,
+                key=lambda group_id: _stable_rank(seed, group_id),
+            )
+        )
+        for class_id, groups in class_groups.items()
+    }
+    failed_states: set[frozenset[str]] = set()
+    stack: list[_ValidationSearchFrame] = []
+    selected = frozenset[str]()
+
+    while True:
+        if selected not in failed_states:
+            selected_counts = dict.fromkeys(range(25), 0)
+            for group_id in selected:
+                for class_id in group_classes[group_id]:
+                    selected_counts[class_id] += 1
+
+            dead_end = any(
+                selected_counts[class_id] > class_group_counts[class_id] - 1
+                for class_id in range(25)
+            )
+            unmet_classes: list[tuple[int, int, int, tuple[str, ...]]] = []
+            if not dead_end:
+                for class_id in range(25):
+                    selected_count = selected_counts[class_id]
+                    required = required_val_groups[class_id]
+                    if selected_count >= required:
+                        continue
+                    candidates = tuple(
+                        group_id
+                        for group_id in ranked_class_groups[class_id]
+                        if group_id not in selected
+                        and all(
+                            selected_counts[related_class] < class_group_counts[related_class] - 1
+                            for related_class in group_classes[group_id]
+                        )
+                    )
+                    if selected_count + len(candidates) < required:
+                        dead_end = True
+                        break
+                    unmet_classes.append(
+                        (
+                            len(candidates),
+                            class_id,
+                            required - selected_count,
+                            candidates,
+                        )
+                    )
+
+            if not dead_end and not unmet_classes:
+                return selected
+
+            if dead_end:
+                failed_states.add(selected)
+            else:
+                _, class_id, deficit, candidates = min(
+                    unmet_classes,
+                    key=lambda item: (item[0], item[1]),
+                )
+                if all(group_classes[group_id] == {class_id} for group_id in candidates):
+                    selected = selected.union(candidates[:deficit])
+                    continue
+                stack.append(
+                    _ValidationSearchFrame(
+                        selected=selected,
+                        class_id=class_id,
+                        candidates=candidates,
+                    )
+                )
+
+        while stack:
+            frame = stack[-1]
+            if frame.next_index >= len(frame.candidates):
+                failed_states.add(frame.selected)
+                stack.pop()
+                continue
+            candidate = frame.candidates[frame.next_index]
+            frame.next_index += 1
+            next_state = frame.selected | {candidate}
+            if next_state not in failed_states:
+                selected = next_state
+                break
+        else:
+            raise ValueError(
+                "validation source-group targets cannot be met while preserving "
+                "at least one train source group for every class"
+            )
+
+
 def _select_split(
     audit: DatasetAudit,
     val_ratio: float,
@@ -473,30 +596,6 @@ def _select_split(
         for class_id in classes:
             class_groups[class_id].add(record.group_id)
 
-    required_val_groups: dict[int, int] = {}
-    for class_id in range(25):
-        groups = class_groups[class_id]
-        if len(groups) < 2:
-            raise ValueError(
-                f"class {class_id} requires at least 2 source groups; "
-                f"found {len(groups)} source groups"
-            )
-        minimum = 2 if len(groups) >= 3 else 1
-        required_val_groups[class_id] = max(
-            minimum,
-            min(len(groups) - 1, round(len(groups) * val_ratio)),
-        )
-
-    ranked_class_groups = {
-        class_id: tuple(
-            sorted(
-                groups,
-                key=lambda group_id: _stable_rank(seed, group_id),
-            )
-        )
-        for class_id, groups in class_groups.items()
-    }
-
     def preserves_train_groups(candidate: str, selected: frozenset[str] | set[str]) -> bool:
         selected_with_candidate = selected | {candidate}
         return all(
@@ -504,47 +603,14 @@ def _select_split(
             for class_id in group_classes[candidate]
         )
 
-    failed_states: set[frozenset[str]] = set()
-
-    def select_required_groups(selected: frozenset[str]) -> frozenset[str] | None:
-        if selected in failed_states:
-            return None
-
-        unmet_classes: list[tuple[int, int, tuple[str, ...]]] = []
-        for class_id in range(25):
-            selected_count = len(class_groups[class_id] & selected)
-            required = required_val_groups[class_id]
-            if selected_count >= required:
-                continue
-            candidates = tuple(
-                group_id
-                for group_id in ranked_class_groups[class_id]
-                if group_id not in selected and preserves_train_groups(group_id, selected)
-            )
-            if len(candidates) < required - selected_count:
-                failed_states.add(selected)
-                return None
-            unmet_classes.append((len(candidates), class_id, candidates))
-
-        if not unmet_classes:
-            return selected
-
-        _, _, candidates = min(unmet_classes, key=lambda item: (item[0], item[1]))
-        for candidate in candidates:
-            result = select_required_groups(selected | {candidate})
-            if result is not None:
-                return result
-
-        failed_states.add(selected)
-        return None
-
-    selected_groups = select_required_groups(frozenset())
-    if selected_groups is None:
-        raise ValueError(
-            "validation source-group targets cannot be met while preserving "
-            "at least one train source group for every class"
+    val_groups = set(
+        _select_validation_groups(
+            class_groups,
+            group_classes,
+            val_ratio,
+            seed,
         )
-    val_groups = set(selected_groups)
+    )
 
     target_val_images = round(len(audit.records) * val_ratio)
     val_images = sum(len(records_by_group[group_id]) for group_id in val_groups)

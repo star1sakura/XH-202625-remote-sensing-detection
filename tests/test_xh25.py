@@ -4,6 +4,7 @@ import json
 import os
 from dataclasses import FrozenInstanceError
 from pathlib import Path
+from time import perf_counter
 
 import pytest
 import yaml
@@ -14,6 +15,7 @@ from xh_detect.data.xh25 import (
     ImageRecord,
     PreparedDataset,
     _link_or_copy,
+    _select_split,
     audit_dataset,
     parse_yolo_hbb_label,
     prepare_dataset,
@@ -675,6 +677,63 @@ def test_prepare_dataset_allows_safe_validation_below_image_target(
     assert len(prepared.train_stems) == 9
     assert all(prepared.train_class_counts[class_id] > 0 for class_id in range(25))
     assert all(prepared.val_class_counts[class_id] > 0 for class_id in range(25))
+
+
+def test_select_split_handles_thousands_of_groups_without_recursion() -> None:
+    polygon = ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))
+
+    def record(group_id: str, class_ids: tuple[int, ...]) -> ImageRecord:
+        return ImageRecord(
+            stem=group_id,
+            image_path=Path(f"{group_id}.jpg"),
+            label_path=Path(f"{group_id}.txt"),
+            width=1,
+            height=1,
+            mode="L",
+            group_id=group_id,
+            perceptual_hash="0000000000000000",
+            annotations=tuple(
+                ObjectAnnotation(
+                    image_id=group_id,
+                    class_id=class_id,
+                    polygon=polygon,
+                )
+                for class_id in class_ids
+            ),
+        )
+
+    records = tuple(record(f"group{index:04d}", (0,)) for index in range(3000)) + (
+        record("other0000", tuple(range(1, 25))),
+        record("other0001", tuple(range(1, 25))),
+    )
+    audit = DatasetAudit(
+        images=len(records),
+        labels=len(records),
+        targets={0: 3000, **{class_id: 2 for class_id in range(1, 25)}},
+        images_per_class={0: 3000, **{class_id: 2 for class_id in range(1, 25)}},
+        dimensions={"1x1": len(records)},
+        modes={"L": len(records)},
+        source_groups=len(records),
+        invalid_lines=0,
+        near_duplicate_candidates=(),
+        records=records,
+    )
+
+    started = perf_counter()
+    train_records, val_records = _select_split(audit, val_ratio=0.4, seed=42)
+    elapsed = perf_counter() - started
+
+    train_class_zero = sum(
+        any(annotation.class_id == 0 for annotation in item.annotations) for item in train_records
+    )
+    val_class_zero = sum(
+        any(annotation.class_id == 0 for annotation in item.annotations) for item in val_records
+    )
+    assert val_class_zero == 1200
+    assert train_class_zero == 1800
+    assert len(val_records) == 1201
+    assert len(train_records) == 1801
+    assert elapsed < 5.0
 
 
 @pytest.mark.parametrize("val_ratio", [float("nan"), float("inf"), -0.1, 0.0, 0.5, 1.0])
