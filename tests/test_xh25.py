@@ -46,6 +46,28 @@ def test_parse_yolo_hbb_label_returns_hbb_polygon(tmp_path: Path) -> None:
     )
 
 
+def test_parse_clamps_six_decimal_rounding_at_normalized_boundary(
+    tmp_path: Path,
+) -> None:
+    label_path = tmp_path / "rounded.txt"
+    _write_label(label_path, "3 0.969870 0.616857 0.060261 0.124593\n")
+
+    (annotation,) = parse_yolo_hbb_label(label_path, "rounded", 1228, 1000)
+
+    assert annotation.polygon[1][0] == 1228
+    assert annotation.polygon[2][0] == 1228
+
+
+def test_parse_rejects_box_outside_normalized_boundary_tolerance(
+    tmp_path: Path,
+) -> None:
+    label_path = tmp_path / "outside.txt"
+    _write_label(label_path, "3 0.969870 0.616857 0.060265 0.124593\n")
+
+    with pytest.raises(ValueError, match="outside image"):
+        parse_yolo_hbb_label(label_path, "outside", 1228, 1000)
+
+
 @pytest.mark.parametrize("dimensions", [(0, 80), (100, 0), (-1, 80), (100, -1)])
 def test_parse_rejects_non_positive_image_dimensions(
     tmp_path: Path, dimensions: tuple[int, int]
@@ -92,7 +114,7 @@ def test_parse_rejects_invalid_lines_with_path_and_line_number(
     tmp_path: Path, line: str, message: str
 ) -> None:
     label_path = tmp_path / "invalid.txt"
-    _write_label(label_path, f"\n{line}\n")
+    _write_label(label_path, f"0 0.5 0.5 0.2 0.2\n{line}\n")
 
     with pytest.raises(ValueError) as error:
         parse_yolo_hbb_label(label_path, "invalid", 100, 80)
@@ -100,6 +122,27 @@ def test_parse_rejects_invalid_lines_with_path_and_line_number(
     error_message = str(error.value)
     assert f"{label_path}:2" in error_message
     assert message in error_message
+
+
+def test_parse_rejects_blank_line_between_annotations(tmp_path: Path) -> None:
+    label_path = tmp_path / "blank-line.txt"
+    _write_label(
+        label_path,
+        "0 0.5 0.5 0.2 0.2\n\n24 0.5 0.5 0.2 0.2\n",
+    )
+
+    with pytest.raises(ValueError) as error:
+        parse_yolo_hbb_label(label_path, "blank-line", 100, 80)
+
+    assert f"{label_path}:2" in str(error.value)
+    assert "five fields" in str(error.value)
+
+
+def test_parse_allows_completely_empty_label_file(tmp_path: Path) -> None:
+    label_path = tmp_path / "empty.txt"
+    _write_label(label_path)
+
+    assert parse_yolo_hbb_label(label_path, "empty", 100, 80) == ()
 
 
 @pytest.mark.parametrize(
@@ -110,10 +153,58 @@ def test_parse_rejects_invalid_lines_with_path_and_line_number(
         ("scene_CROP42", "scene"),
         ("MAR20_1002", "MAR20_1002"),
         ("crop1_scene", "crop1_scene"),
+        ("_crop1", "_crop1"),
     ],
 )
 def test_source_group_id_only_removes_trailing_crop_suffix(stem: str, expected: str) -> None:
     assert source_group_id(stem) == expected
+
+
+@pytest.mark.parametrize("missing_subdir", [Path("images/train"), Path("labels/train")])
+def test_audit_dataset_requires_train_directories(
+    tmp_path: Path,
+    missing_subdir: Path,
+) -> None:
+    source_root = tmp_path / "dataset"
+    for subdir in (Path("images/train"), Path("labels/train")):
+        if subdir != missing_subdir:
+            (source_root / subdir).mkdir(parents=True)
+
+    with pytest.raises(ValueError) as error:
+        audit_dataset(source_root)
+
+    assert str(source_root / missing_subdir) in str(error.value)
+    assert "directory" in str(error.value)
+
+
+@pytest.mark.parametrize("file_subdir", [Path("images/train"), Path("labels/train")])
+def test_audit_dataset_rejects_train_path_that_is_not_directory(
+    tmp_path: Path,
+    file_subdir: Path,
+) -> None:
+    source_root = tmp_path / "dataset"
+    for subdir in (Path("images/train"), Path("labels/train")):
+        path = source_root / subdir
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if subdir == file_subdir:
+            path.write_text("not a directory", encoding="utf-8")
+        else:
+            path.mkdir()
+
+    with pytest.raises(ValueError) as error:
+        audit_dataset(source_root)
+
+    assert str(source_root / file_subdir) in str(error.value)
+    assert "directory" in str(error.value)
+
+
+def test_audit_dataset_rejects_empty_dataset(tmp_path: Path) -> None:
+    source_root = tmp_path / "dataset"
+    (source_root / "images" / "train").mkdir(parents=True)
+    (source_root / "labels" / "train").mkdir(parents=True)
+
+    with pytest.raises(ValueError, match="empty"):
+        audit_dataset(source_root)
 
 
 def test_audit_dataset_reports_expected_statistics(tmp_path: Path) -> None:
@@ -161,6 +252,33 @@ def test_audit_dataset_reports_exact_cross_group_hash_matches(tmp_path: Path) ->
     assert {record.group_id for record in report.records} == {"first", "second"}
 
 
+def test_audit_dataset_buckets_duplicate_candidates_by_hash_and_group(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "dataset"
+    image_dir = source_root / "images" / "train"
+    label_dir = source_root / "labels" / "train"
+    vertical = Image.new("L", (8, 8))
+    vertical.putdata([0 if x < 4 else 255 for _y in range(8) for x in range(8)])
+    horizontal = Image.new("L", (8, 8))
+    horizontal.putdata([0 if y < 4 else 255 for y in range(8) for _x in range(8)])
+    solid = Image.new("L", (8, 8), 64)
+    for stem, image in (
+        ("first", vertical),
+        ("second", vertical),
+        ("different", horizontal),
+        ("scene_crop1", solid),
+        ("scene_crop2", solid),
+    ):
+        image_dir.mkdir(parents=True, exist_ok=True)
+        image.save(image_dir / f"{stem}.jpg")
+        _write_label(label_dir / f"{stem}.txt")
+
+    report = audit_dataset(source_root)
+
+    assert report.near_duplicate_candidates == (("first", "second"),)
+
+
 def test_audit_dataset_aggregates_pairing_image_and_label_errors(tmp_path: Path) -> None:
     source_root = tmp_path / "dataset"
     _write_image(source_root / "images" / "train" / "missing_label.jpg")
@@ -182,6 +300,27 @@ def test_audit_dataset_aggregates_pairing_image_and_label_errors(tmp_path: Path)
     assert str(broken_image) in error_message
     assert f"{invalid_label}:1" in error_message
     assert "class ID 25" in error_message
+
+
+def test_audit_dataset_aggregates_decompression_bomb_as_image_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "dataset"
+    image_path = source_root / "images" / "train" / "bomb.jpg"
+    _write_image(image_path)
+    _write_label(source_root / "labels" / "train" / "bomb.txt")
+
+    def raise_decompression_bomb(_path: Path) -> None:
+        raise Image.DecompressionBombError("image is too large")
+
+    monkeypatch.setattr("xh_detect.data.xh25.Image.open", raise_decompression_bomb)
+
+    with pytest.raises(ValueError) as error:
+        audit_dataset(source_root)
+
+    assert f"{image_path}: damaged image" in str(error.value)
+    assert "image is too large" in str(error.value)
 
 
 def test_audit_dataset_checks_invalid_label_when_paired_image_is_damaged(

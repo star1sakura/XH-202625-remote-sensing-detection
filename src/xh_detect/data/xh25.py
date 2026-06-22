@@ -5,6 +5,7 @@ import re
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
+from itertools import combinations
 from pathlib import Path
 from types import MappingProxyType
 
@@ -64,7 +65,8 @@ class DatasetAudit:
 
 
 def source_group_id(stem: str) -> str:
-    return _CROP_SUFFIX.sub("", stem)
+    group_id = _CROP_SUFFIX.sub("", stem)
+    return group_id or stem
 
 
 def _line_error(path: Path, line_number: int, message: str) -> ValueError:
@@ -73,18 +75,11 @@ def _line_error(path: Path, line_number: int, message: str) -> ValueError:
 
 def _read_normalized_hbb(
     path: Path,
-    *,
-    width: int | None = None,
-    height: int | None = None,
 ) -> tuple[tuple[int, float, float, float, float], ...]:
     boxes: list[tuple[int, float, float, float, float]] = []
-    for line_number, line in enumerate(
-        path.read_text(encoding="utf-8-sig").splitlines(),
-        start=1,
-    ):
+    text = path.read_text(encoding="utf-8-sig")
+    for line_number, line in enumerate(text.splitlines(), start=1):
         fields = line.split()
-        if not fields:
-            continue
         if len(fields) != 5:
             raise _line_error(path, line_number, "YOLO HBB labels require five fields")
 
@@ -116,20 +111,26 @@ def _read_normalized_hbb(
         ):
             raise _line_error(path, line_number, "bounding box is outside image")
 
-        scale_width = 1.0 if width is None else width
-        scale_height = 1.0 if height is None else height
-        left = (x_center - box_width / 2.0) * scale_width
-        right = (x_center + box_width / 2.0) * scale_width
-        top = (y_center - box_height / 2.0) * scale_height
-        bottom = (y_center + box_height / 2.0) * scale_height
+        left = x_center - box_width / 2.0
+        right = x_center + box_width / 2.0
+        top = y_center - box_height / 2.0
+        bottom = y_center + box_height / 2.0
         if (
             left < -_BOUNDARY_TOLERANCE
             or top < -_BOUNDARY_TOLERANCE
-            or right > scale_width + _BOUNDARY_TOLERANCE
-            or bottom > scale_height + _BOUNDARY_TOLERANCE
+            or right > 1.0 + _BOUNDARY_TOLERANCE
+            or bottom > 1.0 + _BOUNDARY_TOLERANCE
         ):
             raise _line_error(path, line_number, "bounding box is outside image")
-        boxes.append((class_id, x_center, y_center, box_width, box_height))
+        boxes.append(
+            (
+                class_id,
+                max(0.0, left),
+                max(0.0, top),
+                min(1.0, right),
+                min(1.0, bottom),
+            )
+        )
 
     return tuple(boxes)
 
@@ -144,20 +145,12 @@ def parse_yolo_hbb_label(
         raise _line_error(path, 0, "width and height must be positive")
 
     annotations: list[ObjectAnnotation] = []
-    for class_id, x_center, y_center, box_width, box_height in _read_normalized_hbb(
-        path,
-        width=width,
-        height=height,
-    ):
-        left = max(0.0, (x_center - box_width / 2.0) * width)
-        right = min(float(width), (x_center + box_width / 2.0) * width)
-        top = max(0.0, (y_center - box_height / 2.0) * height)
-        bottom = min(float(height), (y_center + box_height / 2.0) * height)
+    for class_id, left, top, right, bottom in _read_normalized_hbb(path):
         polygon: Polygon4 = (
-            (left, top),
-            (right, top),
-            (right, bottom),
-            (left, bottom),
+            (left * width, top * height),
+            (right * width, top * height),
+            (right * width, bottom * height),
+            (left * width, bottom * height),
         )
         annotations.append(
             ObjectAnnotation(
@@ -184,9 +177,21 @@ def _average_hash(image: Image.Image) -> str:
 def audit_dataset(source_root: Path) -> DatasetAudit:
     images_dir = source_root / "images" / "train"
     labels_dir = source_root / "labels" / "train"
+    errors: list[str] = []
+    for directory in (images_dir, labels_dir):
+        if not directory.exists():
+            errors.append(f"required directory does not exist: {directory}")
+        elif not directory.is_dir():
+            errors.append(f"required path is not a directory: {directory}")
+    if errors:
+        raise ValueError("dataset audit failed:\n" + "\n".join(errors))
+
     image_paths = {path.stem: path for path in sorted(images_dir.glob("*.jpg"))}
     label_paths = {path.stem: path for path in sorted(labels_dir.glob("*.txt"))}
-    errors: list[str] = []
+    if not image_paths:
+        errors.append(f"dataset is empty: no .jpg images in {images_dir}")
+    if not label_paths:
+        errors.append(f"dataset is empty: no .txt labels in {labels_dir}")
 
     for stem in sorted(image_paths.keys() - label_paths.keys()):
         errors.append(f"missing label for image: {image_paths[stem]}")
@@ -216,7 +221,7 @@ def audit_dataset(source_root: Path) -> DatasetAudit:
                         str(image.mode),
                         _average_hash(image),
                     )
-        except (OSError, UnidentifiedImageError) as error:
+        except (OSError, UnidentifiedImageError, Image.DecompressionBombError) as error:
             errors.append(f"{image_path}: damaged image: {error}")
 
         if image_details is None:
@@ -261,11 +266,14 @@ def audit_dataset(source_root: Path) -> DatasetAudit:
     if errors:
         raise ValueError("dataset audit failed:\n" + "\n".join(errors))
 
+    records_by_hash: dict[str, list[ImageRecord]] = {}
+    for record in records:
+        records_by_hash.setdefault(record.perceptual_hash, []).append(record)
     duplicate_candidates = {
         tuple(sorted((first.stem, second.stem)))
-        for index, first in enumerate(records)
-        for second in records[index + 1 :]
-        if first.perceptual_hash == second.perceptual_hash and first.group_id != second.group_id
+        for bucket in records_by_hash.values()
+        for first, second in combinations(bucket, 2)
+        if first.group_id != second.group_id
     }
     return DatasetAudit(
         images=len(image_paths),
