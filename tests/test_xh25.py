@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+from collections import Counter
 from dataclasses import FrozenInstanceError
+from itertools import combinations
 from pathlib import Path
 from time import perf_counter
 
@@ -16,6 +18,7 @@ from xh_detect.data.xh25 import (
     PreparedDataset,
     _link_or_copy,
     _select_split,
+    _select_validation_groups,
     audit_dataset,
     parse_yolo_hbb_label,
     prepare_dataset,
@@ -93,6 +96,77 @@ def _recursive_tree_snapshot(root: Path) -> dict[str, tuple[str, bytes | None]]:
         )
         for path in sorted(root.rglob("*"))
     }
+
+
+def _memory_record(
+    group_id: str,
+    class_box_counts: dict[int, int],
+) -> ImageRecord:
+    polygon = ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))
+    return ImageRecord(
+        stem=group_id,
+        image_path=Path(f"{group_id}.jpg"),
+        label_path=Path(f"{group_id}.txt"),
+        width=1,
+        height=1,
+        mode="L",
+        group_id=group_id,
+        perceptual_hash="0000000000000000",
+        annotations=tuple(
+            ObjectAnnotation(
+                image_id=group_id,
+                class_id=class_id,
+                polygon=polygon,
+            )
+            for class_id, box_count in sorted(class_box_counts.items())
+            for _ in range(box_count)
+        ),
+    )
+
+
+def _quality_objective(
+    all_records: tuple[ImageRecord, ...],
+    val_records: tuple[ImageRecord, ...],
+    val_ratio: float,
+) -> tuple[float, float, float, float]:
+    taxonomy = get_taxonomy("xh25")
+
+    def counts(
+        records: tuple[ImageRecord, ...],
+    ) -> tuple[Counter[int], Counter[int], Counter[str]]:
+        boxes = Counter(
+            annotation.class_id for record in records for annotation in record.annotations
+        )
+        images = Counter(
+            class_id
+            for record in records
+            for class_id in {annotation.class_id for annotation in record.annotations}
+        )
+        coarse = Counter(
+            taxonomy.coarse_name(annotation.class_id)
+            for record in records
+            for annotation in record.annotations
+        )
+        return boxes, images, coarse
+
+    total_boxes, total_images, total_coarse = counts(all_records)
+    val_boxes, val_images, val_coarse = counts(val_records)
+    fine_box_deviations = [
+        abs(val_boxes[class_id] / total_boxes[class_id] - val_ratio) for class_id in range(25)
+    ]
+    remaining_deviations = [
+        abs(val_images[class_id] / total_images[class_id] - val_ratio) for class_id in range(25)
+    ] + [
+        abs(val_coarse[coarse_name] / total_coarse[coarse_name] - val_ratio)
+        for coarse_name in ("ship", "aircraft", "vehicle")
+    ]
+    all_deviations = fine_box_deviations + remaining_deviations
+    return (
+        max(fine_box_deviations),
+        sum(deviation * deviation for deviation in all_deviations),
+        sum(all_deviations),
+        abs(len(val_records) / len(all_records) - val_ratio),
+    )
 
 
 def test_parse_yolo_hbb_label_returns_hbb_polygon(tmp_path: Path) -> None:
@@ -746,6 +820,98 @@ def test_select_split_handles_thousands_of_groups_without_recursion() -> None:
     assert elapsed < 5.0
 
 
+def test_select_split_optimizes_stratification_to_exhaustive_best_objective() -> None:
+    records = tuple(
+        _memory_record(
+            group_id,
+            dict.fromkeys(range(25), weight),
+        )
+        for group_id, weight in (
+            ("weight08", 8),
+            ("weight04", 4),
+            ("weight03", 3),
+            ("weight02", 2),
+            ("weight01", 1),
+        )
+    )
+    audit = DatasetAudit(
+        images=len(records),
+        labels=len(records),
+        targets=dict.fromkeys(range(25), 18),
+        images_per_class=dict.fromkeys(range(25), 5),
+        dimensions={"1x1": len(records)},
+        modes={"L": len(records)},
+        source_groups=len(records),
+        invalid_lines=0,
+        near_duplicate_candidates=(),
+        records=records,
+    )
+    oracle = min(
+        _quality_objective(records, tuple(candidate), 0.4) for candidate in combinations(records, 2)
+    )
+
+    objectives = []
+    for seed in (0, 3):
+        _, val_records = _select_split(audit, val_ratio=0.4, seed=seed)
+        objective = _quality_objective(records, val_records, 0.4)
+        objectives.append(objective)
+        assert objective == oracle
+        assert objective[0] < 0.02
+        assert objective[3] == 0.0
+
+    assert objectives[0] == objectives[1]
+
+
+def test_validation_group_search_matches_exhaustive_feasibility_oracle() -> None:
+    group_classes = {
+        "g0": {0, 1},
+        "g1": {0, 2},
+        "g2": {0, 3},
+        "g3": {1, 2},
+        "g4": {1, 3},
+        "g5": {2, 3},
+        "g6": {0, 1, 2},
+        "g7": {1, 2, 3},
+        "g8": {0, 3},
+        "h0": set(range(4, 25)),
+        "h1": set(range(4, 25)),
+        "h2": set(range(4, 25)),
+    }
+    class_groups = {class_id: set() for class_id in range(25)}
+    for group_id, class_ids in group_classes.items():
+        for class_id in class_ids:
+            class_groups[class_id].add(group_id)
+    required = {
+        class_id: max(
+            2 if len(groups) >= 3 else 1,
+            min(len(groups) - 1, round(len(groups) * 0.49)),
+        )
+        for class_id, groups in class_groups.items()
+    }
+    all_groups = tuple(group_classes)
+    feasible = {
+        frozenset(candidate)
+        for count in range(len(all_groups) + 1)
+        for candidate in combinations(all_groups, count)
+        if all(
+            required[class_id]
+            <= len(set(candidate) & class_groups[class_id])
+            <= len(class_groups[class_id]) - 1
+            for class_id in range(25)
+        )
+    }
+    assert feasible
+
+    for seed in range(6):
+        selected = _select_validation_groups(
+            class_groups,
+            group_classes,
+            val_ratio=0.49,
+            seed=seed,
+        )
+        assert selected in feasible
+
+
 @pytest.mark.parametrize("val_ratio", [float("nan"), float("inf"), -0.1, 0.0, 0.5, 1.0])
 def test_prepare_dataset_rejects_invalid_val_ratio(tmp_path: Path, val_ratio: float) -> None:
     with pytest.raises(ValueError, match="val_ratio"):
@@ -812,6 +978,185 @@ def test_prepare_dataset_replaces_previous_split_without_orphans(
     )
     assert not stale_image.exists()
     assert not stale_label.exists()
+
+
+def test_prepare_dataset_materialization_failure_preserves_previous_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    output_root = tmp_path / "output"
+    _write_complete_source(source_root)
+    prepare_dataset(source_root, output_root, seed=42)
+    before = _recursive_tree_snapshot(output_root)
+    original_link_or_copy = _link_or_copy
+    calls = 0
+
+    def fail_seventh_copy(source: Path, destination: Path) -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 7:
+            raise OSError("injected materialization failure")
+        return original_link_or_copy(source, destination)
+
+    monkeypatch.setattr("xh_detect.data.xh25._link_or_copy", fail_seventh_copy)
+
+    with pytest.raises(OSError, match="injected materialization failure"):
+        prepare_dataset(source_root, output_root, seed=43)
+
+    assert calls == 7
+    assert _recursive_tree_snapshot(output_root) == before
+    assert [
+        path.name
+        for path in tmp_path.iterdir()
+        if path.name.startswith(".output.") and path.name != output_root.name
+    ] == []
+
+
+def test_prepare_dataset_publish_failure_restores_previous_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    output_root = tmp_path / "output"
+    _write_complete_source(source_root)
+    prepare_dataset(source_root, output_root, seed=42)
+    before = _recursive_tree_snapshot(output_root)
+    original_replace = os.replace
+
+    def fail_stage_publish(source: Path | str, destination: Path | str) -> None:
+        source_path = Path(source)
+        destination_path = Path(destination)
+        if destination_path == output_root and source_path.name.startswith(".output.stage-"):
+            raise OSError("injected publish failure")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", fail_stage_publish)
+
+    with pytest.raises(OSError, match="injected publish failure"):
+        prepare_dataset(source_root, output_root, seed=43)
+
+    assert _recursive_tree_snapshot(output_root) == before
+    assert [path.name for path in tmp_path.iterdir() if path.name.startswith(".output.")] == []
+
+
+def test_prepare_dataset_retains_backup_if_safe_cleanup_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    output_root = tmp_path / "output"
+    _write_complete_source(source_root)
+    prepare_dataset(source_root, output_root, seed=42)
+    before = _recursive_tree_snapshot(output_root)
+    from xh_detect.data import xh25
+
+    original_safe_remove_tree = xh25._safe_remove_tree
+
+    def fail_backup_cleanup(path: Path) -> None:
+        if Path(path).name.startswith(".output.backup-"):
+            raise PermissionError("injected backup cleanup failure")
+        original_safe_remove_tree(path)
+
+    monkeypatch.setattr(xh25, "_safe_remove_tree", fail_backup_cleanup)
+
+    with pytest.raises(RuntimeError, match="retained backup"):
+        prepare_dataset(source_root, output_root, seed=43)
+
+    backups = [path for path in tmp_path.iterdir() if path.name.startswith(".output.backup-")]
+    assert len(backups) == 1
+    assert _recursive_tree_snapshot(backups[0]) == before
+    assert _recursive_tree_snapshot(output_root) != before
+
+
+@pytest.mark.parametrize("reparse_name", ["output", "manifests"])
+def test_prepare_dataset_rejects_mocked_reparse_points_before_materialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reparse_name: str,
+) -> None:
+    source_root = tmp_path / "source"
+    output_root = tmp_path / "output"
+    _write_complete_source(source_root)
+    calls = 0
+    original_link_or_copy = _link_or_copy
+
+    def track_link_or_copy(source: Path, destination: Path) -> str:
+        nonlocal calls
+        calls += 1
+        return original_link_or_copy(source, destination)
+
+    def fake_is_reparse_point(path: Path) -> bool:
+        path = Path(path)
+        return path == output_root if reparse_name == "output" else path.name == "manifests"
+
+    monkeypatch.setattr("xh_detect.data.xh25._link_or_copy", track_link_or_copy)
+    monkeypatch.setattr(
+        "xh_detect.data.xh25._is_reparse_point",
+        fake_is_reparse_point,
+        raising=False,
+    )
+
+    with pytest.raises(ValueError, match="reparse"):
+        prepare_dataset(source_root, output_root)
+
+    assert calls == 0
+    assert not output_root.exists()
+    assert [path.name for path in tmp_path.iterdir() if path.name.startswith(".output.")] == []
+
+
+def test_prepare_dataset_rechecks_reparse_points_before_publish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    output_root = tmp_path / "output"
+    _write_complete_source(source_root)
+    prepare_dataset(source_root, output_root, seed=42)
+    before = _recursive_tree_snapshot(output_root)
+    output_checks = 0
+
+    def become_reparse_before_publish(path: Path) -> bool:
+        nonlocal output_checks
+        if Path(path) == output_root:
+            output_checks += 1
+            return output_checks >= 2
+        return False
+
+    monkeypatch.setattr(
+        "xh_detect.data.xh25._is_reparse_point",
+        become_reparse_before_publish,
+        raising=False,
+    )
+
+    with pytest.raises(ValueError, match="reparse"):
+        prepare_dataset(source_root, output_root, seed=43)
+
+    assert output_checks >= 2
+    assert _recursive_tree_snapshot(output_root) == before
+    assert [path.name for path in tmp_path.iterdir() if path.name.startswith(".output.")] == []
+
+
+def test_prepare_dataset_rejects_symlink_output_without_external_writes(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    output_root = tmp_path / "output"
+    external_root = tmp_path / "external"
+    _write_complete_source(source_root)
+    external_root.mkdir()
+    marker = external_root / "marker.txt"
+    marker.write_text("unchanged", encoding="utf-8")
+    try:
+        output_root.symlink_to(external_root, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"directory symlinks unavailable: {error}")
+    before = _recursive_tree_snapshot(external_root)
+
+    with pytest.raises(ValueError, match="reparse"):
+        prepare_dataset(source_root, output_root)
+
+    assert _recursive_tree_snapshot(external_root) == before
 
 
 @pytest.mark.parametrize(

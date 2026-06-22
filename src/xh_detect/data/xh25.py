@@ -6,17 +6,19 @@ import math
 import os
 import re
 import shutil
+import stat
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import combinations
 from pathlib import Path
-from tempfile import NamedTemporaryFile
+from tempfile import NamedTemporaryFile, mkdtemp
 from types import MappingProxyType
 
 import yaml
 from PIL import Image, UnidentifiedImageError
 
+from xh_detect.data.xh25_split import optimize_validation_groups
 from xh_detect.taxonomy import get_taxonomy
 from xh_detect.types import ObjectAnnotation, Polygon4
 
@@ -361,6 +363,57 @@ def _safe_unlink_file(path: Path) -> None:
         path.unlink()
 
 
+def _is_reparse_point(path: Path) -> bool:
+    path = Path(path)
+    if path.is_symlink():
+        return True
+    is_junction = getattr(path, "is_junction", None)
+    if callable(is_junction) and is_junction():
+        return True
+    try:
+        attributes = getattr(os.lstat(path), "st_file_attributes", 0)
+    except FileNotFoundError:
+        return False
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return bool(attributes & reparse_flag)
+
+
+def _assert_no_reparse_points(path: Path) -> None:
+    path = Path(path)
+    for candidate in (path, *path.parents):
+        if _is_reparse_point(candidate):
+            raise ValueError(f"refusing reparse point in output path: {candidate}")
+
+
+def _remove_reparse_point(path: Path) -> None:
+    try:
+        path.unlink()
+    except (IsADirectoryError, PermissionError):
+        path.rmdir()
+
+
+def _safe_remove_tree(path: Path) -> None:
+    path = Path(path)
+    if not os.path.lexists(path):
+        return
+    if _is_reparse_point(path):
+        _remove_reparse_point(path)
+        return
+    if not path.is_dir():
+        path.unlink()
+        return
+    with os.scandir(path) as entries:
+        children = [Path(entry.path) for entry in entries]
+    for child in children:
+        if _is_reparse_point(child):
+            _remove_reparse_point(child)
+        elif stat.S_ISDIR(os.lstat(child).st_mode):
+            _safe_remove_tree(child)
+        else:
+            child.unlink()
+    path.rmdir()
+
+
 def _link_or_copy(source: Path, destination: Path) -> str:
     destination.parent.mkdir(parents=True, exist_ok=True)
     _safe_unlink_file(destination)
@@ -389,7 +442,9 @@ def _validate_output_target_parent(path: Path, output_root: Path) -> None:
 
 def _prepare_output_target_parent(path: Path, output_root: Path) -> None:
     _validate_output_target_parent(path, output_root)
+    _assert_no_reparse_points(path.parent)
     path.parent.mkdir(parents=True, exist_ok=True)
+    _assert_no_reparse_points(path.parent)
     _validate_output_target_parent(path, output_root)
 
 
@@ -626,6 +681,16 @@ def _select_split(
         if preserves_train_groups(group_id, val_groups):
             val_groups.add(group_id)
             val_images += len(records_by_group[group_id])
+    val_groups = set(
+        optimize_validation_groups(
+            audit.records,
+            val_groups,
+            class_groups,
+            val_ratio,
+            seed,
+            _stable_rank,
+        )
+    )
 
     train_records = tuple(record for record in audit.records if record.group_id not in val_groups)
     val_records = tuple(record for record in audit.records if record.group_id in val_groups)
@@ -818,6 +883,207 @@ def _analysis_markdown(report: Mapping[str, object]) -> str:
     )
 
 
+def _metadata_paths(output_root: Path) -> tuple[Path, ...]:
+    manifests_dir = output_root / "manifests"
+    reports_dir = output_root / "reports"
+    return (
+        manifests_dir / "train.txt",
+        manifests_dir / "val.txt",
+        manifests_dir / "source-groups.json",
+        manifests_dir / "val-image-map.json",
+        manifests_dir / "demo-samples.json",
+        output_root / "dataset.yaml",
+        reports_dir / "dataset-analysis.json",
+        reports_dir / "dataset-analysis.md",
+        reports_dir / "val-ground-truth.json",
+    )
+
+
+def _fixed_output_directories(output_root: Path) -> tuple[Path, ...]:
+    return (
+        output_root / "images",
+        output_root / "images" / "train",
+        output_root / "images" / "val",
+        output_root / "labels",
+        output_root / "labels" / "train",
+        output_root / "labels" / "val",
+        output_root / "manifests",
+        output_root / "reports",
+    )
+
+
+def _validate_output_tree_paths(output_root: Path) -> None:
+    _assert_no_reparse_points(output_root)
+    for directory in _fixed_output_directories(output_root):
+        if _is_reparse_point(directory):
+            raise ValueError(f"refusing reparse point in output path: {directory}")
+    for metadata_path in _metadata_paths(output_root):
+        _validate_output_target_parent(metadata_path, output_root)
+
+
+def _create_stage_directories(stage_root: Path) -> None:
+    _validate_output_tree_paths(stage_root)
+    for directory in _fixed_output_directories(stage_root):
+        directory.mkdir(parents=True, exist_ok=True)
+        if _is_reparse_point(directory):
+            raise ValueError(f"refusing reparse point in stage path: {directory}")
+
+
+def _validate_materialized_dataset(
+    root: Path,
+    train_records: tuple[ImageRecord, ...],
+    val_records: tuple[ImageRecord, ...],
+) -> None:
+    _validate_output_tree_paths(root)
+    expected = {
+        "train": {record.stem for record in train_records},
+        "val": {record.stem for record in val_records},
+    }
+    for split in ("train", "val"):
+        image_stems = {
+            path.stem for path in (root / "images" / split).iterdir() if path.suffix == ".jpg"
+        }
+        label_stems = {
+            path.stem for path in (root / "labels" / split).iterdir() if path.suffix == ".txt"
+        }
+        if image_stems != expected[split] or label_stems != expected[split]:
+            raise ValueError(f"materialized {split} image/label stems are inconsistent")
+        manifest_stems = {
+            Path(line).stem
+            for line in (root / "manifests" / f"{split}.txt")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        }
+        if manifest_stems != expected[split]:
+            raise ValueError(f"materialized {split} manifest stems are inconsistent")
+
+    source_groups = json.loads(
+        (root / "manifests" / "source-groups.json").read_text(encoding="utf-8")
+    )
+    expected_all = expected["train"] | expected["val"]
+    if set(source_groups) != expected_all:
+        raise ValueError("materialized source-group manifest stems are inconsistent")
+    for stem, details in source_groups.items():
+        split = details.get("split")
+        if split not in expected or stem not in expected[split]:
+            raise ValueError("materialized source-group split is inconsistent")
+
+    val_image_map = json.loads(
+        (root / "manifests" / "val-image-map.json").read_text(encoding="utf-8")
+    )
+    sorted_val = sorted(expected["val"])
+    expected_map = {stem: image_id for image_id, stem in enumerate(sorted_val, start=1)}
+    if val_image_map != expected_map:
+        raise ValueError("materialized validation image map is inconsistent")
+
+    coco = json.loads((root / "reports" / "val-ground-truth.json").read_text(encoding="utf-8"))
+    coco_images = coco.get("images")
+    if not isinstance(coco_images, list):
+        raise ValueError("materialized COCO images are invalid")
+    coco_map = {
+        Path(str(image["file_name"])).stem: image["id"]
+        for image in coco_images
+        if isinstance(image, Mapping)
+    }
+    if coco_map != expected_map:
+        raise ValueError("materialized COCO image IDs are inconsistent")
+
+
+def _materialize_dataset(
+    audit: DatasetAudit,
+    train_records: tuple[ImageRecord, ...],
+    val_records: tuple[ImageRecord, ...],
+    stage_root: Path,
+    published_root: Path,
+    val_ratio: float,
+    seed: int,
+) -> None:
+    _create_stage_directories(stage_root)
+    demo_samples = _demo_samples(val_records)
+    val_image_map = {
+        record.stem: image_id
+        for image_id, record in enumerate(
+            sorted(val_records, key=lambda item: item.stem),
+            start=1,
+        )
+    }
+    coco = _coco_ground_truth(val_records, val_image_map)
+    link_mode_counts: Counter[str] = Counter()
+    for split, records in (("train", train_records), ("val", val_records)):
+        for record in records:
+            image_destination = stage_root / "images" / split / record.image_path.name
+            label_destination = stage_root / "labels" / split / record.label_path.name
+            _assert_no_reparse_points(image_destination.parent)
+            link_mode_counts[_link_or_copy(record.image_path, image_destination)] += 1
+            _assert_no_reparse_points(label_destination.parent)
+            link_mode_counts[_link_or_copy(record.label_path, label_destination)] += 1
+
+    sorted_train = sorted(record.stem for record in train_records)
+    sorted_val = sorted(record.stem for record in val_records)
+    train_manifest = "".join(f"{_relative_image_path('train', stem)}\n" for stem in sorted_train)
+    val_manifest = "".join(f"{_relative_image_path('val', stem)}\n" for stem in sorted_val)
+    source_groups = {
+        record.stem: {
+            "group": record.group_id,
+            "split": "val" if record.stem in val_image_map else "train",
+        }
+        for record in sorted(audit.records, key=lambda item: item.stem)
+    }
+    taxonomy = get_taxonomy("xh25")
+    dataset_yaml = yaml.safe_dump(
+        {
+            "path": str(published_root.resolve()),
+            "train": "images/train",
+            "val": "images/val",
+            "names": dict(taxonomy.names),
+        },
+        allow_unicode=True,
+        sort_keys=False,
+    )
+    analysis = _analysis_report(
+        audit,
+        train_records,
+        val_records,
+        val_ratio,
+        seed,
+        link_mode_counts,
+    )
+    manifests_dir = stage_root / "manifests"
+    reports_dir = stage_root / "reports"
+    _atomic_write_text(manifests_dir / "train.txt", train_manifest, stage_root)
+    _atomic_write_text(manifests_dir / "val.txt", val_manifest, stage_root)
+    _atomic_write_json(manifests_dir / "source-groups.json", source_groups, stage_root)
+    _atomic_write_json(manifests_dir / "val-image-map.json", val_image_map, stage_root)
+    _atomic_write_json(manifests_dir / "demo-samples.json", demo_samples, stage_root)
+    _atomic_write_text(stage_root / "dataset.yaml", dataset_yaml, stage_root)
+    _atomic_write_json(reports_dir / "dataset-analysis.json", analysis, stage_root)
+    _atomic_write_text(
+        reports_dir / "dataset-analysis.md",
+        _analysis_markdown(analysis),
+        stage_root,
+    )
+    _atomic_write_json(reports_dir / "val-ground-truth.json", coco, stage_root)
+    _validate_materialized_dataset(stage_root, train_records, val_records)
+
+
+def _reserve_sibling_path(output_root: Path, kind: str) -> Path:
+    path = Path(
+        mkdtemp(
+            prefix=f".{output_root.name}.{kind}-",
+            dir=output_root.parent,
+        )
+    )
+    path.rmdir()
+    return path
+
+
+def _cleanup_or_report(path: Path, kind: str) -> None:
+    try:
+        _safe_remove_tree(path)
+    except OSError as error:
+        raise RuntimeError(f"retained {kind} after safe cleanup failure: {path}") from error
+
+
 def prepare_dataset(
     source_root: Path,
     output_root: Path,
@@ -847,116 +1113,73 @@ def prepare_dataset(
             f"source_root={resolved_source}, output_root={resolved_output}"
         )
 
+    _validate_output_tree_paths(output_root)
     audit = audit_dataset(source_root)
     train_records, val_records = _select_split(audit, val_ratio, seed)
-    demo_samples = _demo_samples(val_records)
-    val_image_map = {
-        record.stem: image_id
-        for image_id, record in enumerate(
-            sorted(val_records, key=lambda item: item.stem),
-            start=1,
+    _assert_no_reparse_points(output_root.parent)
+    output_root.parent.mkdir(parents=True, exist_ok=True)
+    _assert_no_reparse_points(output_root.parent)
+    stage_root = Path(
+        mkdtemp(
+            prefix=f".{output_root.name}.stage-",
+            dir=output_root.parent,
         )
-    }
-    coco = _coco_ground_truth(val_records, val_image_map)
-
-    manifests_dir = output_root / "manifests"
-    reports_dir = output_root / "reports"
-    metadata_paths = (
-        manifests_dir / "train.txt",
-        manifests_dir / "val.txt",
-        manifests_dir / "source-groups.json",
-        manifests_dir / "val-image-map.json",
-        manifests_dir / "demo-samples.json",
-        output_root / "dataset.yaml",
-        reports_dir / "dataset-analysis.json",
-        reports_dir / "dataset-analysis.md",
-        reports_dir / "val-ground-truth.json",
     )
-    for metadata_path in metadata_paths:
-        _validate_output_target_parent(metadata_path, output_root)
-
-    _reset_split_directories(source_root, output_root)
-    link_mode_counts: Counter[str] = Counter()
-    for split, records in (("train", train_records), ("val", val_records)):
-        for record in records:
-            link_mode_counts[
-                _link_or_copy(
-                    record.image_path,
-                    output_root / "images" / split / record.image_path.name,
-                )
-            ] += 1
-            link_mode_counts[
-                _link_or_copy(
-                    record.label_path,
-                    output_root / "labels" / split / record.label_path.name,
-                )
-            ] += 1
+    backup_root: Path | None = None
+    published = False
+    publication_validated = False
+    try:
+        _materialize_dataset(
+            audit,
+            train_records,
+            val_records,
+            stage_root,
+            output_root,
+            val_ratio,
+            seed,
+        )
+        _validate_output_tree_paths(output_root)
+        _validate_output_tree_paths(stage_root)
+        if os.path.lexists(output_root):
+            backup_root = _reserve_sibling_path(output_root, "backup")
+            os.replace(output_root, backup_root)
+        try:
+            os.replace(stage_root, output_root)
+            published = True
+        except OSError:
+            if backup_root is not None and os.path.lexists(backup_root):
+                os.replace(backup_root, output_root)
+                backup_root = None
+            raise
+        _validate_materialized_dataset(output_root, train_records, val_records)
+        publication_validated = True
+        if backup_root is not None:
+            _cleanup_or_report(backup_root, "backup")
+            backup_root = None
+    except BaseException:
+        if publication_validated:
+            raise
+        if published and os.path.lexists(output_root):
+            try:
+                _safe_remove_tree(output_root)
+            except OSError as error:
+                if backup_root is not None:
+                    raise RuntimeError(
+                        f"retained backup after rollback cleanup failure: {backup_root}"
+                    ) from error
+                raise
+        if backup_root is not None and os.path.lexists(backup_root):
+            os.replace(backup_root, output_root)
+            backup_root = None
+        if os.path.lexists(stage_root):
+            _cleanup_or_report(stage_root, "stage")
+        raise
+    finally:
+        if os.path.lexists(stage_root):
+            _cleanup_or_report(stage_root, "stage")
 
     sorted_train = sorted(record.stem for record in train_records)
     sorted_val = sorted(record.stem for record in val_records)
-    train_manifest = "".join(f"{_relative_image_path('train', stem)}\n" for stem in sorted_train)
-    val_manifest = "".join(f"{_relative_image_path('val', stem)}\n" for stem in sorted_val)
-    source_groups = {
-        record.stem: {
-            "group": record.group_id,
-            "split": "val" if record.stem in val_image_map else "train",
-        }
-        for record in sorted(audit.records, key=lambda item: item.stem)
-    }
-    taxonomy = get_taxonomy("xh25")
-    dataset_yaml = yaml.safe_dump(
-        {
-            "path": str(output_root.resolve()),
-            "train": "images/train",
-            "val": "images/val",
-            "names": dict(taxonomy.names),
-        },
-        allow_unicode=True,
-        sort_keys=False,
-    )
-    analysis = _analysis_report(
-        audit,
-        train_records,
-        val_records,
-        val_ratio,
-        seed,
-        link_mode_counts,
-    )
-
-    _atomic_write_text(manifests_dir / "train.txt", train_manifest, output_root)
-    _atomic_write_text(manifests_dir / "val.txt", val_manifest, output_root)
-    _atomic_write_json(
-        manifests_dir / "source-groups.json",
-        source_groups,
-        output_root,
-    )
-    _atomic_write_json(
-        manifests_dir / "val-image-map.json",
-        val_image_map,
-        output_root,
-    )
-    _atomic_write_json(
-        manifests_dir / "demo-samples.json",
-        demo_samples,
-        output_root,
-    )
-    _atomic_write_text(output_root / "dataset.yaml", dataset_yaml, output_root)
-    _atomic_write_json(
-        reports_dir / "dataset-analysis.json",
-        analysis,
-        output_root,
-    )
-    _atomic_write_text(
-        reports_dir / "dataset-analysis.md",
-        _analysis_markdown(analysis),
-        output_root,
-    )
-    _atomic_write_json(
-        reports_dir / "val-ground-truth.json",
-        coco,
-        output_root,
-    )
-
     train_groups = frozenset(record.group_id for record in train_records)
     val_groups = frozenset(record.group_id for record in val_records)
     return PreparedDataset(
