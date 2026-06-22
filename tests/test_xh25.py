@@ -85,6 +85,16 @@ def _markdown_json_section(markdown: str, heading: str) -> object:
     return json.loads(section)
 
 
+def _recursive_tree_snapshot(root: Path) -> dict[str, tuple[str, bytes | None]]:
+    return {
+        path.relative_to(root).as_posix(): (
+            "directory" if path.is_dir() else "file",
+            None if path.is_dir() else path.read_bytes(),
+        )
+        for path in sorted(root.rglob("*"))
+    }
+
+
 def test_parse_yolo_hbb_label_returns_hbb_polygon(tmp_path: Path) -> None:
     label_path = tmp_path / "sample.txt"
     _write_label(label_path, "24 0.5 0.5 0.2 0.25\n")
@@ -804,21 +814,34 @@ def test_prepare_dataset_replaces_previous_split_without_orphans(
     assert not stale_label.exists()
 
 
-def test_prepare_dataset_refuses_to_materialize_over_source(tmp_path: Path) -> None:
-    source_root = tmp_path / "source"
+@pytest.mark.parametrize(
+    "path_relation",
+    ["equal", "output_inside_source", "source_inside_output"],
+)
+def test_prepare_dataset_rejects_overlapping_paths_without_side_effects(
+    tmp_path: Path,
+    path_relation: str,
+) -> None:
+    if path_relation == "equal":
+        source_root = tmp_path / "source"
+        output_root = source_root
+    elif path_relation == "output_inside_source":
+        source_root = tmp_path / "source"
+        output_root = source_root / "prepared"
+    else:
+        output_root = tmp_path / "output"
+        source_root = output_root / "source"
     _write_complete_source(source_root)
-    original_image = (source_root / "images" / "train" / "class00_group0_crop1.jpg").read_bytes()
-    original_label = (source_root / "labels" / "train" / "class00_group0_crop1.txt").read_bytes()
+    before = _recursive_tree_snapshot(tmp_path)
 
-    with pytest.raises(ValueError, match="source data"):
-        prepare_dataset(source_root, source_root)
+    with pytest.raises(ValueError) as error:
+        prepare_dataset(source_root, output_root)
 
-    assert (
-        source_root / "images" / "train" / "class00_group0_crop1.jpg"
-    ).read_bytes() == original_image
-    assert (
-        source_root / "labels" / "train" / "class00_group0_crop1.txt"
-    ).read_bytes() == original_label
+    assert "overlap" in str(error.value)
+    assert _recursive_tree_snapshot(tmp_path) == before
+    assert not (source_root / "manifests").exists()
+    assert not (source_root / "reports").exists()
+    assert not (source_root / "dataset.yaml").exists()
 
 
 @pytest.mark.parametrize("metadata_directory", ["manifests", "reports"])

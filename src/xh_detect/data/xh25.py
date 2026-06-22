@@ -385,14 +385,16 @@ def _validate_output_target_parent(path: Path, output_root: Path) -> None:
     resolved_parent = path.parent.resolve()
     if resolved_parent != resolved_output and not resolved_parent.is_relative_to(resolved_output):
         raise ValueError(f"refusing to write outside output_root: {path}")
+
+
+def _prepare_output_target_parent(path: Path, output_root: Path) -> None:
+    _validate_output_target_parent(path, output_root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    resolved_parent = path.parent.resolve()
-    if resolved_parent != resolved_output and not resolved_parent.is_relative_to(resolved_output):
-        raise ValueError(f"refusing to write outside output_root: {path}")
+    _validate_output_target_parent(path, output_root)
 
 
 def _atomic_write_text(path: Path, text: str, output_root: Path) -> None:
-    _validate_output_target_parent(path, output_root)
+    _prepare_output_target_parent(path, output_root)
     temporary_path: Path | None = None
     try:
         with NamedTemporaryFile(
@@ -833,6 +835,18 @@ def prepare_dataset(
 
     source_root = Path(source_root)
     output_root = Path(output_root)
+    resolved_source = source_root.resolve()
+    resolved_output = output_root.resolve()
+    if (
+        resolved_source == resolved_output
+        or resolved_source.is_relative_to(resolved_output)
+        or resolved_output.is_relative_to(resolved_source)
+    ):
+        raise ValueError(
+            "source_root and output_root overlap: "
+            f"source_root={resolved_source}, output_root={resolved_output}"
+        )
+
     audit = audit_dataset(source_root)
     train_records, val_records = _select_split(audit, val_ratio, seed)
     demo_samples = _demo_samples(val_records)
