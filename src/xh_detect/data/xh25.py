@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import math
+import os
 import re
+import shutil
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import combinations
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from types import MappingProxyType
 
+import yaml
 from PIL import Image, UnidentifiedImageError
 
 from xh_detect.taxonomy import get_taxonomy
@@ -62,6 +68,38 @@ class DatasetAudit:
             tuple(tuple(pair) for pair in self.near_duplicate_candidates),
         )
         object.__setattr__(self, "records", tuple(self.records))
+
+
+@dataclass(frozen=True)
+class PreparedDataset:
+    output_root: Path
+    train_stems: frozenset[str]
+    val_stems: frozenset[str]
+    train_groups: frozenset[str]
+    val_groups: frozenset[str]
+    train_class_counts: Mapping[int, int]
+    val_class_counts: Mapping[int, int]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "output_root", Path(self.output_root))
+        object.__setattr__(self, "train_stems", frozenset(self.train_stems))
+        object.__setattr__(self, "val_stems", frozenset(self.val_stems))
+        object.__setattr__(self, "train_groups", frozenset(self.train_groups))
+        object.__setattr__(self, "val_groups", frozenset(self.val_groups))
+        object.__setattr__(
+            self,
+            "train_class_counts",
+            MappingProxyType(
+                {class_id: self.train_class_counts.get(class_id, 0) for class_id in range(25)}
+            ),
+        )
+        object.__setattr__(
+            self,
+            "val_class_counts",
+            MappingProxyType(
+                {class_id: self.val_class_counts.get(class_id, 0) for class_id in range(25)}
+            ),
+        )
 
 
 def source_group_id(stem: str) -> str:
@@ -286,4 +324,454 @@ def audit_dataset(source_root: Path) -> DatasetAudit:
         invalid_lines=0,
         near_duplicate_candidates=tuple(sorted(duplicate_candidates)),
         records=tuple(records),
+    )
+
+
+def _stable_rank(seed: int, value: str) -> str:
+    return hashlib.sha256(f"{seed}:{value}".encode()).hexdigest()
+
+
+def _class_counts(records: tuple[ImageRecord, ...]) -> dict[int, int]:
+    counts: Counter[int] = Counter(
+        annotation.class_id for record in records for annotation in record.annotations
+    )
+    return {class_id: counts[class_id] for class_id in range(25)}
+
+
+def _coarse_counts(class_counts: Mapping[int, int]) -> dict[str, int]:
+    taxonomy = get_taxonomy("xh25")
+    counts = {"ship": 0, "aircraft": 0, "vehicle": 0}
+    for class_id in range(25):
+        counts[taxonomy.coarse_name(class_id)] += class_counts[class_id]
+    return counts
+
+
+def _safe_unlink_file(path: Path) -> None:
+    if path.is_symlink() or path.exists():
+        if path.is_dir() and not path.is_symlink():
+            raise ValueError(f"refusing to unlink directory as a file: {path}")
+        path.unlink()
+
+
+def _link_or_copy(source: Path, destination: Path) -> str:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    _safe_unlink_file(destination)
+    try:
+        os.link(source, destination)
+        return "hardlink"
+    except OSError:
+        _safe_unlink_file(destination)
+
+    try:
+        destination.symlink_to(source.resolve())
+        return "symlink"
+    except OSError:
+        _safe_unlink_file(destination)
+
+    shutil.copy2(source, destination)
+    return "copy"
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary.write(text)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+            temporary_path = Path(temporary.name)
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
+
+
+def _atomic_write_json(path: Path, value: object) -> None:
+    _atomic_write_text(
+        path,
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            indent=2,
+            allow_nan=False,
+            sort_keys=True,
+        )
+        + "\n",
+    )
+
+
+def _split_directories(output_root: Path) -> tuple[Path, ...]:
+    return (
+        output_root / "images" / "train",
+        output_root / "images" / "val",
+        output_root / "labels" / "train",
+        output_root / "labels" / "val",
+    )
+
+
+def _reset_split_directories(source_root: Path, output_root: Path) -> None:
+    resolved_output = output_root.resolve()
+    source_data_directories = (
+        (source_root / "images" / "train").resolve(),
+        (source_root / "labels" / "train").resolve(),
+    )
+    for directory in _split_directories(output_root):
+        resolved_directory = directory.resolve()
+        if resolved_directory == resolved_output or not resolved_directory.is_relative_to(
+            resolved_output
+        ):
+            raise ValueError(f"refusing to clean split directory outside output_root: {directory}")
+        if any(
+            source_directory == resolved_directory
+            or source_directory.is_relative_to(resolved_directory)
+            or resolved_directory.is_relative_to(source_directory)
+            for source_directory in source_data_directories
+        ):
+            raise ValueError(f"output split directory would contain source data: {directory}")
+        if directory.is_symlink():
+            raise ValueError(f"refusing to recursively clean symlink: {directory}")
+        if directory.exists():
+            if not directory.is_dir():
+                raise ValueError(f"output split path is not a directory: {directory}")
+            shutil.rmtree(directory)
+        directory.mkdir(parents=True, exist_ok=True)
+
+
+def _select_split(
+    audit: DatasetAudit,
+    val_ratio: float,
+    seed: int,
+) -> tuple[tuple[ImageRecord, ...], tuple[ImageRecord, ...]]:
+    records_by_group: dict[str, list[ImageRecord]] = {}
+    class_groups = {class_id: set() for class_id in range(25)}
+    for record in audit.records:
+        records_by_group.setdefault(record.group_id, []).append(record)
+        for class_id in {annotation.class_id for annotation in record.annotations}:
+            class_groups[class_id].add(record.group_id)
+
+    val_groups: set[str] = set()
+    for class_id in sorted(range(25), key=lambda item: (len(class_groups[item]), item)):
+        groups = class_groups[class_id]
+        if len(groups) < 2:
+            raise ValueError(
+                f"class {class_id} requires at least 2 source groups; "
+                f"found {len(groups)} source groups"
+            )
+        minimum = 2 if len(groups) >= 3 else 1
+        target = max(
+            minimum,
+            min(len(groups) - 1, round(len(groups) * val_ratio)),
+        )
+        selected = len(groups & val_groups)
+        candidates = sorted(
+            groups - val_groups,
+            key=lambda group_id: _stable_rank(seed, group_id),
+        )
+        val_groups.update(candidates[: max(0, target - selected)])
+
+    target_val_images = round(len(audit.records) * val_ratio)
+    val_images = sum(len(records_by_group[group_id]) for group_id in val_groups)
+    remaining_groups = sorted(
+        records_by_group.keys() - val_groups,
+        key=lambda group_id: _stable_rank(seed, group_id),
+    )
+    for group_id in remaining_groups:
+        if val_images >= target_val_images:
+            break
+        val_groups.add(group_id)
+        val_images += len(records_by_group[group_id])
+
+    train_records = tuple(record for record in audit.records if record.group_id not in val_groups)
+    val_records = tuple(record for record in audit.records if record.group_id in val_groups)
+    train_counts = _class_counts(train_records)
+    val_counts = _class_counts(val_records)
+    for class_id in range(25):
+        if train_counts[class_id] <= 0 or val_counts[class_id] <= 0:
+            raise ValueError(
+                f"class {class_id} is missing from "
+                f"{'train' if train_counts[class_id] <= 0 else 'val'} split"
+            )
+
+    train_stems = {record.stem for record in train_records}
+    val_stems = {record.stem for record in val_records}
+    train_groups = {record.group_id for record in train_records}
+    selected_val_groups = {record.group_id for record in val_records}
+    if not train_stems.isdisjoint(val_stems):
+        raise ValueError("train and val stems overlap")
+    if not train_groups.isdisjoint(selected_val_groups):
+        raise ValueError("train and val source groups overlap")
+    return train_records, val_records
+
+
+def _relative_image_path(split: str, stem: str) -> str:
+    return (Path("images") / split / f"{stem}.jpg").as_posix()
+
+
+def _demo_samples(val_records: tuple[ImageRecord, ...]) -> dict[str, str]:
+    taxonomy = get_taxonomy("xh25")
+    samples: dict[str, str] = {}
+    for coarse_name in ("ship", "aircraft", "vehicle"):
+        candidates = sorted(
+            record.stem
+            for record in val_records
+            if any(
+                taxonomy.coarse_name(annotation.class_id) == coarse_name
+                for annotation in record.annotations
+            )
+        )
+        if not candidates:
+            raise ValueError(f"validation split is missing a {coarse_name} demo sample")
+        samples[coarse_name] = _relative_image_path("val", candidates[0])
+    return samples
+
+
+def _coco_ground_truth(
+    val_records: tuple[ImageRecord, ...],
+    image_map: Mapping[str, int],
+) -> dict[str, object]:
+    taxonomy = get_taxonomy("xh25")
+    images: list[dict[str, object]] = []
+    annotations: list[dict[str, object]] = []
+    annotation_id = 1
+    for record in sorted(val_records, key=lambda item: item.stem):
+        image_id = image_map[record.stem]
+        images.append(
+            {
+                "id": image_id,
+                "file_name": _relative_image_path("val", record.stem),
+                "width": record.width,
+                "height": record.height,
+            }
+        )
+        for annotation in record.annotations:
+            xs = [
+                min(float(record.width), max(0.0, float(point[0]))) for point in annotation.polygon
+            ]
+            ys = [
+                min(float(record.height), max(0.0, float(point[1]))) for point in annotation.polygon
+            ]
+            xmin = min(xs)
+            ymin = min(ys)
+            box_width = max(xs) - xmin
+            box_height = max(ys) - ymin
+            if box_width <= 0.0 or box_height <= 0.0:
+                raise ValueError(f"{record.stem}: clamped bounding box must have positive size")
+            annotations.append(
+                {
+                    "id": annotation_id,
+                    "image_id": image_id,
+                    "category_id": annotation.class_id,
+                    "bbox": [xmin, ymin, box_width, box_height],
+                    "area": box_width * box_height,
+                    "iscrowd": 0,
+                }
+            )
+            annotation_id += 1
+
+    return {
+        "images": images,
+        "categories": [
+            {"id": class_id, "name": taxonomy.names[class_id]} for class_id in range(25)
+        ],
+        "annotations": annotations,
+    }
+
+
+def _analysis_report(
+    audit: DatasetAudit,
+    train_records: tuple[ImageRecord, ...],
+    val_records: tuple[ImageRecord, ...],
+    val_ratio: float,
+    seed: int,
+    link_mode_counts: Mapping[str, int],
+) -> dict[str, object]:
+    source_counts = {class_id: audit.targets.get(class_id, 0) for class_id in range(25)}
+    train_counts = _class_counts(train_records)
+    val_counts = _class_counts(val_records)
+    train_groups = {record.group_id for record in train_records}
+    val_groups = {record.group_id for record in val_records}
+    return {
+        "source": {
+            "images": audit.images,
+            "labels": audit.labels,
+            "targets": source_counts,
+            "dimensions": dict(audit.dimensions),
+            "modes": dict(audit.modes),
+            "source_groups": audit.source_groups,
+            "near_duplicate_candidates": list(audit.near_duplicate_candidates),
+        },
+        "split": {
+            "train": {
+                "images": len(train_records),
+                "targets": train_counts,
+                "coarse_counts": _coarse_counts(train_counts),
+                "source_groups": len(train_groups),
+            },
+            "val": {
+                "images": len(val_records),
+                "targets": val_counts,
+                "coarse_counts": _coarse_counts(val_counts),
+                "source_groups": len(val_groups),
+            },
+            "group_overlap": len(train_groups & val_groups),
+        },
+        "val_ratio": val_ratio,
+        "seed": seed,
+        "link_mode_counts": {
+            mode: link_mode_counts.get(mode, 0) for mode in ("hardlink", "symlink", "copy")
+        },
+    }
+
+
+def _analysis_markdown(report: Mapping[str, object]) -> str:
+    source = report["source"]
+    split = report["split"]
+    assert isinstance(source, Mapping)
+    assert isinstance(split, Mapping)
+    train = split["train"]
+    val = split["val"]
+    assert isinstance(train, Mapping)
+    assert isinstance(val, Mapping)
+    target_counts = {"train": train["targets"], "val": val["targets"]}
+    coarse_counts = {
+        "train": train["coarse_counts"],
+        "val": val["coarse_counts"],
+    }
+    return (
+        "# XH25 Dataset Analysis\n\n"
+        f"- Source images: {source['images']}\n"
+        f"- Source labels: {source['labels']}\n"
+        f"- Source groups: {source['source_groups']}\n"
+        f"- Train images: {train['images']}\n"
+        f"- Validation images: {val['images']}\n"
+        f"- Group overlap: {split['group_overlap']}\n"
+        f"- Validation ratio: {report['val_ratio']}\n"
+        f"- Seed: {report['seed']}\n\n"
+        "## Dimensions\n\n"
+        f"```json\n{json.dumps(source['dimensions'], indent=2)}\n```\n\n"
+        "## Modes\n\n"
+        f"```json\n{json.dumps(source['modes'], indent=2)}\n```\n\n"
+        "## Coarse counts\n\n"
+        f"```json\n{json.dumps(coarse_counts, indent=2)}\n```\n\n"
+        "## Near-duplicate candidates\n\n"
+        f"```json\n{json.dumps(source['near_duplicate_candidates'], indent=2)}\n"
+        "```\n\n"
+        "## Link modes\n\n"
+        f"```json\n{json.dumps(report['link_mode_counts'], indent=2)}\n```\n\n"
+        "## Target counts\n\n"
+        f"```json\n{json.dumps(target_counts, indent=2)}\n```\n"
+    )
+
+
+def prepare_dataset(
+    source_root: Path,
+    output_root: Path,
+    val_ratio: float = 0.15,
+    seed: int = 42,
+) -> PreparedDataset:
+    if (
+        not isinstance(val_ratio, float)
+        or not math.isfinite(val_ratio)
+        or not 0.0 < val_ratio < 0.5
+    ):
+        raise ValueError("val_ratio must be a finite float between 0 and 0.5")
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise ValueError("seed must be a non-negative integer")
+
+    source_root = Path(source_root)
+    output_root = Path(output_root)
+    audit = audit_dataset(source_root)
+    train_records, val_records = _select_split(audit, val_ratio, seed)
+    demo_samples = _demo_samples(val_records)
+    val_image_map = {
+        record.stem: image_id
+        for image_id, record in enumerate(
+            sorted(val_records, key=lambda item: item.stem),
+            start=1,
+        )
+    }
+    coco = _coco_ground_truth(val_records, val_image_map)
+
+    _reset_split_directories(source_root, output_root)
+    link_mode_counts: Counter[str] = Counter()
+    for split, records in (("train", train_records), ("val", val_records)):
+        for record in records:
+            link_mode_counts[
+                _link_or_copy(
+                    record.image_path,
+                    output_root / "images" / split / record.image_path.name,
+                )
+            ] += 1
+            link_mode_counts[
+                _link_or_copy(
+                    record.label_path,
+                    output_root / "labels" / split / record.label_path.name,
+                )
+            ] += 1
+
+    sorted_train = sorted(record.stem for record in train_records)
+    sorted_val = sorted(record.stem for record in val_records)
+    train_manifest = "".join(f"{_relative_image_path('train', stem)}\n" for stem in sorted_train)
+    val_manifest = "".join(f"{_relative_image_path('val', stem)}\n" for stem in sorted_val)
+    source_groups = {
+        record.stem: {
+            "group": record.group_id,
+            "split": "val" if record.stem in val_image_map else "train",
+        }
+        for record in sorted(audit.records, key=lambda item: item.stem)
+    }
+    taxonomy = get_taxonomy("xh25")
+    dataset_yaml = yaml.safe_dump(
+        {
+            "path": str(output_root.resolve()),
+            "train": "images/train",
+            "val": "images/val",
+            "names": dict(taxonomy.names),
+        },
+        allow_unicode=True,
+        sort_keys=False,
+    )
+    analysis = _analysis_report(
+        audit,
+        train_records,
+        val_records,
+        val_ratio,
+        seed,
+        link_mode_counts,
+    )
+
+    manifests_dir = output_root / "manifests"
+    reports_dir = output_root / "reports"
+    _atomic_write_text(manifests_dir / "train.txt", train_manifest)
+    _atomic_write_text(manifests_dir / "val.txt", val_manifest)
+    _atomic_write_json(manifests_dir / "source-groups.json", source_groups)
+    _atomic_write_json(manifests_dir / "val-image-map.json", val_image_map)
+    _atomic_write_json(manifests_dir / "demo-samples.json", demo_samples)
+    _atomic_write_text(output_root / "dataset.yaml", dataset_yaml)
+    _atomic_write_json(reports_dir / "dataset-analysis.json", analysis)
+    _atomic_write_text(
+        reports_dir / "dataset-analysis.md",
+        _analysis_markdown(analysis),
+    )
+    _atomic_write_json(reports_dir / "val-ground-truth.json", coco)
+
+    train_groups = frozenset(record.group_id for record in train_records)
+    val_groups = frozenset(record.group_id for record in val_records)
+    return PreparedDataset(
+        output_root=output_root,
+        train_stems=frozenset(sorted_train),
+        val_stems=frozenset(sorted_val),
+        train_groups=train_groups,
+        val_groups=val_groups,
+        train_class_counts=_class_counts(train_records),
+        val_class_counts=_class_counts(val_records),
     )

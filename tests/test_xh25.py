@@ -1,18 +1,25 @@
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
+import yaml
 from PIL import Image
 
 from xh_detect.data.xh25 import (
     DatasetAudit,
     ImageRecord,
+    PreparedDataset,
+    _link_or_copy,
     audit_dataset,
     parse_yolo_hbb_label,
+    prepare_dataset,
     source_group_id,
 )
+from xh_detect.taxonomy import get_taxonomy
 from xh_detect.types import ObjectAnnotation
 
 
@@ -29,6 +36,33 @@ def _write_image(
 def _write_label(path: Path, text: str = "") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+def _write_class_sample(source_root: Path, stem: str, class_id: int) -> None:
+    _write_image(
+        source_root / "images" / "train" / f"{stem}.jpg",
+        size=(16, 12),
+        color=(
+            (class_id * 37 + len(stem)) % 256,
+            (class_id * 53 + len(stem) * 3) % 256,
+            (class_id * 71 + len(stem) * 5) % 256,
+        ),
+    )
+    _write_label(
+        source_root / "labels" / "train" / f"{stem}.txt",
+        f"{class_id} 0.5 0.5 0.5 0.5\n",
+    )
+
+
+def _write_complete_source(source_root: Path) -> None:
+    for class_id in range(25):
+        for group_index in range(3):
+            group = f"class{class_id:02d}_group{group_index}"
+            if class_id == 0 and group_index == 0:
+                _write_class_sample(source_root, f"{group}_crop1", class_id)
+                _write_class_sample(source_root, f"{group}_crop2", class_id)
+            else:
+                _write_class_sample(source_root, group, class_id)
 
 
 def test_parse_yolo_hbb_label_returns_hbb_polygon(tmp_path: Path) -> None:
@@ -399,3 +433,247 @@ def test_audit_structures_are_frozen_and_defensively_copy_collections() -> None:
         report.targets[0] = 2
     with pytest.raises(FrozenInstanceError):
         report.images = 2
+
+
+def test_prepare_dataset_is_deterministic_group_safe_and_writes_metadata(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    first_output = tmp_path / "first"
+    second_output = tmp_path / "second"
+    _write_complete_source(source_root)
+
+    first = prepare_dataset(source_root, first_output, val_ratio=0.15, seed=42)
+    second = prepare_dataset(source_root, second_output, val_ratio=0.15, seed=42)
+
+    assert first.train_stems == second.train_stems
+    assert first.val_stems == second.val_stems
+    assert first.train_groups == second.train_groups
+    assert first.val_groups == second.val_groups
+    assert first.train_groups.isdisjoint(first.val_groups)
+    assert first.train_stems.isdisjoint(first.val_stems)
+    assert all(first.train_class_counts[class_id] > 0 for class_id in range(25))
+    assert all(first.val_class_counts[class_id] > 0 for class_id in range(25))
+    assert (
+        "class00_group0_crop1" in first.train_stems and "class00_group0_crop2" in first.train_stems
+    ) or ("class00_group0_crop1" in first.val_stems and "class00_group0_crop2" in first.val_stems)
+
+    train_manifest = (
+        (first_output / "manifests" / "train.txt").read_text(encoding="utf-8").splitlines()
+    )
+    val_manifest = (first_output / "manifests" / "val.txt").read_text(encoding="utf-8").splitlines()
+    assert train_manifest == sorted(train_manifest)
+    assert val_manifest == sorted(val_manifest)
+    assert train_manifest == [f"images/train/{stem}.jpg" for stem in sorted(first.train_stems)]
+    assert val_manifest == [f"images/val/{stem}.jpg" for stem in sorted(first.val_stems)]
+    assert all(not Path(entry).is_absolute() for entry in train_manifest + val_manifest)
+
+    source_groups = json.loads(
+        (first_output / "manifests" / "source-groups.json").read_text(encoding="utf-8")
+    )
+    assert list(source_groups) == sorted(source_groups)
+    assert source_groups["class00_group0_crop1"]["group"] == "class00_group0"
+    assert source_groups["class00_group0_crop1"]["split"] in {"train", "val"}
+
+    first_image_map = json.loads(
+        (first_output / "manifests" / "val-image-map.json").read_text(encoding="utf-8")
+    )
+    second_image_map = json.loads(
+        (second_output / "manifests" / "val-image-map.json").read_text(encoding="utf-8")
+    )
+    assert first_image_map == second_image_map
+    assert list(first_image_map) == sorted(first.val_stems)
+    assert list(first_image_map.values()) == list(range(1, len(first.val_stems) + 1))
+
+    demo_samples = json.loads(
+        (first_output / "manifests" / "demo-samples.json").read_text(encoding="utf-8")
+    )
+    assert set(demo_samples) == {"ship", "aircraft", "vehicle"}
+    assert all(path in val_manifest for path in demo_samples.values())
+
+    taxonomy = get_taxonomy("xh25")
+    dataset_yaml = yaml.safe_load((first_output / "dataset.yaml").read_text(encoding="utf-8"))
+    assert dataset_yaml == {
+        "path": str(first_output.resolve()),
+        "train": "images/train",
+        "val": "images/val",
+        "names": dict(taxonomy.names),
+    }
+
+    coco = json.loads(
+        (first_output / "reports" / "val-ground-truth.json").read_text(encoding="utf-8")
+    )
+    assert coco["categories"] == [
+        {"id": class_id, "name": taxonomy.names[class_id]} for class_id in range(25)
+    ]
+    assert [image["id"] for image in coco["images"]] == list(range(1, len(first.val_stems) + 1))
+    assert [image["file_name"] for image in coco["images"]] == val_manifest
+    assert all(image["width"] == 16 and image["height"] == 12 for image in coco["images"])
+    assert [annotation["id"] for annotation in coco["annotations"]] == list(
+        range(1, len(coco["annotations"]) + 1)
+    )
+    assert all(annotation["bbox"] == [4.0, 3.0, 8.0, 6.0] for annotation in coco["annotations"])
+    assert all(annotation["area"] == 48.0 for annotation in coco["annotations"])
+    assert all(annotation["iscrowd"] == 0 for annotation in coco["annotations"])
+    assert {annotation["image_id"] for annotation in coco["annotations"]} == set(
+        first_image_map.values()
+    )
+
+    analysis = json.loads(
+        (first_output / "reports" / "dataset-analysis.json").read_text(encoding="utf-8")
+    )
+    assert analysis["source"]["images"] == 76
+    assert analysis["split"]["group_overlap"] == 0
+    assert analysis["val_ratio"] == 0.15
+    assert analysis["seed"] == 42
+    assert set(analysis["link_mode_counts"]) <= {"hardlink", "symlink", "copy"}
+    analysis_markdown = (first_output / "reports" / "dataset-analysis.md").read_text(
+        encoding="utf-8"
+    )
+    for heading in (
+        "Dimensions",
+        "Modes",
+        "Coarse counts",
+        "Near-duplicate candidates",
+        "Link modes",
+        "Target counts",
+    ):
+        assert heading in analysis_markdown
+
+
+def test_prepare_dataset_rejects_class_with_one_source_group(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    _write_class_sample(source_root, "class00_only", 0)
+    for class_id in range(1, 25):
+        _write_class_sample(source_root, f"class{class_id:02d}_group0", class_id)
+        _write_class_sample(source_root, f"class{class_id:02d}_group1", class_id)
+
+    with pytest.raises(ValueError, match=r"class 0.*source groups"):
+        prepare_dataset(source_root, tmp_path / "output")
+
+
+@pytest.mark.parametrize("val_ratio", [float("nan"), float("inf"), -0.1, 0.0, 0.5, 1.0])
+def test_prepare_dataset_rejects_invalid_val_ratio(tmp_path: Path, val_ratio: float) -> None:
+    with pytest.raises(ValueError, match="val_ratio"):
+        prepare_dataset(tmp_path / "source", tmp_path / "output", val_ratio=val_ratio)
+
+
+@pytest.mark.parametrize("seed", [True, -1, 1.5, "42"])
+def test_prepare_dataset_rejects_invalid_seed(tmp_path: Path, seed: object) -> None:
+    with pytest.raises(ValueError, match="seed"):
+        prepare_dataset(tmp_path / "source", tmp_path / "output", seed=seed)
+
+
+def test_link_or_copy_falls_back_to_copy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "nested" / "destination.txt"
+    source.write_text("new content", encoding="utf-8")
+    destination.parent.mkdir()
+    destination.write_text("old content", encoding="utf-8")
+
+    def fail_hardlink(_source: Path, _destination: Path) -> None:
+        raise OSError("hard links unavailable")
+
+    def fail_symlink(_self: Path, _target: Path, target_is_directory: bool = False) -> None:
+        del target_is_directory
+        raise OSError("symbolic links unavailable")
+
+    monkeypatch.setattr(os, "link", fail_hardlink)
+    monkeypatch.setattr(Path, "symlink_to", fail_symlink)
+
+    assert _link_or_copy(source, destination) == "copy"
+    assert destination.read_bytes() == source.read_bytes()
+
+
+def test_prepare_dataset_replaces_previous_split_without_orphans(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    output_root = tmp_path / "output"
+    _write_complete_source(source_root)
+    first = prepare_dataset(source_root, output_root, seed=42)
+
+    stale_image = output_root / "images" / "val" / "stale.jpg"
+    stale_label = output_root / "labels" / "train" / "stale.txt"
+    stale_image.write_bytes(b"stale")
+    stale_label.write_text("stale", encoding="utf-8")
+
+    second = prepare_dataset(source_root, output_root, seed=43)
+
+    assert (first.train_stems, first.val_stems) != (
+        second.train_stems,
+        second.val_stems,
+    )
+    assert {path.stem for path in (output_root / "images" / "train").glob("*.jpg")} == set(
+        second.train_stems
+    )
+    assert {path.stem for path in (output_root / "images" / "val").glob("*.jpg")} == set(
+        second.val_stems
+    )
+    assert {path.stem for path in (output_root / "labels" / "train").glob("*.txt")} == set(
+        second.train_stems
+    )
+    assert {path.stem for path in (output_root / "labels" / "val").glob("*.txt")} == set(
+        second.val_stems
+    )
+    assert not stale_image.exists()
+    assert not stale_label.exists()
+
+
+def test_prepare_dataset_refuses_to_materialize_over_source(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    _write_complete_source(source_root)
+    original_image = (source_root / "images" / "train" / "class00_group0_crop1.jpg").read_bytes()
+    original_label = (source_root / "labels" / "train" / "class00_group0_crop1.txt").read_bytes()
+
+    with pytest.raises(ValueError, match="source data"):
+        prepare_dataset(source_root, source_root)
+
+    assert (
+        source_root / "images" / "train" / "class00_group0_crop1.jpg"
+    ).read_bytes() == original_image
+    assert (
+        source_root / "labels" / "train" / "class00_group0_crop1.txt"
+    ).read_bytes() == original_label
+
+
+def test_prepared_dataset_is_frozen_and_defensively_copies_collections() -> None:
+    train_stems = {"train"}
+    val_stems = {"val"}
+    train_groups = {"train-group"}
+    val_groups = {"val-group"}
+    train_counts = {0: 1}
+    val_counts = {24: 2}
+    prepared = PreparedDataset(
+        output_root=Path("output"),
+        train_stems=train_stems,
+        val_stems=val_stems,
+        train_groups=train_groups,
+        val_groups=val_groups,
+        train_class_counts=train_counts,
+        val_class_counts=val_counts,
+    )
+
+    train_stems.add("changed")
+    val_stems.add("changed")
+    train_groups.add("changed")
+    val_groups.add("changed")
+    train_counts[0] = 99
+    val_counts[24] = 99
+
+    assert prepared.train_stems == frozenset({"train"})
+    assert prepared.val_stems == frozenset({"val"})
+    assert prepared.train_groups == frozenset({"train-group"})
+    assert prepared.val_groups == frozenset({"val-group"})
+    assert prepared.train_class_counts == {
+        **dict.fromkeys(range(25), 0),
+        0: 1,
+    }
+    assert prepared.val_class_counts == {
+        **dict.fromkeys(range(25), 0),
+        24: 2,
+    }
+    with pytest.raises(TypeError):
+        prepared.train_class_counts[0] = 2
+    with pytest.raises(FrozenInstanceError):
+        prepared.output_root = Path("changed")
