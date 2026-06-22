@@ -473,15 +473,8 @@ def _select_split(
         for class_id in classes:
             class_groups[class_id].add(record.group_id)
 
-    def preserves_train_groups(candidate: str, selected: set[str]) -> bool:
-        selected_with_candidate = selected | {candidate}
-        return all(
-            class_groups[class_id] - selected_with_candidate
-            for class_id in group_classes[candidate]
-        )
-
-    val_groups: set[str] = set()
-    for class_id in sorted(range(25), key=lambda item: (len(class_groups[item]), item)):
+    required_val_groups: dict[int, int] = {}
+    for class_id in range(25):
         groups = class_groups[class_id]
         if len(groups) < 2:
             raise ValueError(
@@ -489,27 +482,69 @@ def _select_split(
                 f"found {len(groups)} source groups"
             )
         minimum = 2 if len(groups) >= 3 else 1
-        target = max(
+        required_val_groups[class_id] = max(
             minimum,
             min(len(groups) - 1, round(len(groups) * val_ratio)),
         )
-        selected = len(groups & val_groups)
-        candidates = sorted(
-            groups - val_groups,
-            key=lambda group_id: _stable_rank(seed, group_id),
-        )
-        for candidate in candidates:
-            if selected >= target:
-                break
-            if preserves_train_groups(candidate, val_groups):
-                val_groups.add(candidate)
-                selected += 1
-        if selected < target:
-            raise ValueError(
-                f"class {class_id} validation target of {target} source groups "
-                "cannot be met while preserving at least one train source group "
-                "for every class"
+
+    ranked_class_groups = {
+        class_id: tuple(
+            sorted(
+                groups,
+                key=lambda group_id: _stable_rank(seed, group_id),
             )
+        )
+        for class_id, groups in class_groups.items()
+    }
+
+    def preserves_train_groups(candidate: str, selected: frozenset[str] | set[str]) -> bool:
+        selected_with_candidate = selected | {candidate}
+        return all(
+            len(class_groups[class_id] & selected_with_candidate) <= len(class_groups[class_id]) - 1
+            for class_id in group_classes[candidate]
+        )
+
+    failed_states: set[frozenset[str]] = set()
+
+    def select_required_groups(selected: frozenset[str]) -> frozenset[str] | None:
+        if selected in failed_states:
+            return None
+
+        unmet_classes: list[tuple[int, int, tuple[str, ...]]] = []
+        for class_id in range(25):
+            selected_count = len(class_groups[class_id] & selected)
+            required = required_val_groups[class_id]
+            if selected_count >= required:
+                continue
+            candidates = tuple(
+                group_id
+                for group_id in ranked_class_groups[class_id]
+                if group_id not in selected and preserves_train_groups(group_id, selected)
+            )
+            if len(candidates) < required - selected_count:
+                failed_states.add(selected)
+                return None
+            unmet_classes.append((len(candidates), class_id, candidates))
+
+        if not unmet_classes:
+            return selected
+
+        _, _, candidates = min(unmet_classes, key=lambda item: (item[0], item[1]))
+        for candidate in candidates:
+            result = select_required_groups(selected | {candidate})
+            if result is not None:
+                return result
+
+        failed_states.add(selected)
+        return None
+
+    selected_groups = select_required_groups(frozenset())
+    if selected_groups is None:
+        raise ValueError(
+            "validation source-group targets cannot be met while preserving "
+            "at least one train source group for every class"
+        )
+    val_groups = set(selected_groups)
 
     target_val_images = round(len(audit.records) * val_ratio)
     val_images = sum(len(records_by_group[group_id]) for group_id in val_groups)
@@ -523,11 +558,6 @@ def _select_split(
         if preserves_train_groups(group_id, val_groups):
             val_groups.add(group_id)
             val_images += len(records_by_group[group_id])
-    if val_images < target_val_images:
-        raise ValueError(
-            f"validation image target of {target_val_images} cannot be met while "
-            "preserving at least one train source group for every class"
-        )
 
     train_records = tuple(record for record in audit.records if record.group_id not in val_groups)
     val_records = tuple(record for record in audit.records if record.group_id in val_groups)

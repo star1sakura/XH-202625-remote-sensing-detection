@@ -616,8 +616,63 @@ def test_prepare_dataset_fill_preserves_one_train_group_for_multilabel_classes(
         seed=11,
     )
 
-    assert {"g1", "g2"} <= prepared.val_groups
-    assert "g3" in prepared.train_groups
+    class_zero_groups = {"g1", "g2", "g3"}
+    assert len(class_zero_groups & prepared.val_groups) == 2
+    assert len(class_zero_groups & prepared.train_groups) == 1
+    assert all(prepared.train_class_counts[class_id] > 0 for class_id in range(25))
+    assert all(prepared.val_class_counts[class_id] > 0 for class_id in range(25))
+
+
+def test_prepare_dataset_backtracks_to_find_valid_multilabel_split(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    group_classes = {
+        "g0": (0, 1),
+        "g1": (0, 1),
+        "g2": (0, 2),
+        "g3": (1, 2),
+        "g4": (2,),
+        "h0": tuple(range(3, 25)),
+        "h1": tuple(range(3, 25)),
+        "h2": tuple(range(3, 25)),
+    }
+    for group_id, class_ids in group_classes.items():
+        _write_multilabel_sample(source_root, group_id, class_ids)
+
+    prepared = prepare_dataset(
+        source_root,
+        tmp_path / "output",
+        val_ratio=0.49,
+        seed=0,
+    )
+
+    assert prepared.val_groups == frozenset({"g1", "g2", "g3", "h0", "h1"})
+    assert prepared.train_groups == frozenset({"g0", "g4", "h2"})
+    assert all(prepared.train_class_counts[class_id] > 0 for class_id in range(25))
+    assert all(prepared.val_class_counts[class_id] > 0 for class_id in range(25))
+
+
+def test_prepare_dataset_allows_safe_validation_below_image_target(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    all_classes = tuple(range(25))
+    _write_multilabel_sample(source_root, "small", all_classes)
+    for crop_index in range(1, 10):
+        _write_multilabel_sample(source_root, f"large_crop{crop_index}", all_classes)
+
+    prepared = prepare_dataset(
+        source_root,
+        tmp_path / "output",
+        val_ratio=0.49,
+        seed=1,
+    )
+
+    assert prepared.val_groups == frozenset({"small"})
+    assert prepared.train_groups == frozenset({"large"})
+    assert len(prepared.val_stems) == 1
+    assert len(prepared.train_stems) == 9
     assert all(prepared.train_class_counts[class_id] > 0 for class_id in range(25))
     assert all(prepared.val_class_counts[class_id] > 0 for class_id in range(25))
 
