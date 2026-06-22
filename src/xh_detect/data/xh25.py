@@ -372,8 +372,19 @@ def _link_or_copy(source: Path, destination: Path) -> str:
     return "copy"
 
 
-def _atomic_write_text(path: Path, text: str) -> None:
+def _validate_output_target_parent(path: Path, output_root: Path) -> None:
+    resolved_output = output_root.resolve()
+    resolved_parent = path.parent.resolve()
+    if resolved_parent != resolved_output and not resolved_parent.is_relative_to(resolved_output):
+        raise ValueError(f"refusing to write outside output_root: {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
+    resolved_parent = path.parent.resolve()
+    if resolved_parent != resolved_output and not resolved_parent.is_relative_to(resolved_output):
+        raise ValueError(f"refusing to write outside output_root: {path}")
+
+
+def _atomic_write_text(path: Path, text: str, output_root: Path) -> None:
+    _validate_output_target_parent(path, output_root)
     temporary_path: Path | None = None
     try:
         with NamedTemporaryFile(
@@ -395,7 +406,7 @@ def _atomic_write_text(path: Path, text: str) -> None:
             temporary_path.unlink()
 
 
-def _atomic_write_json(path: Path, value: object) -> None:
+def _atomic_write_json(path: Path, value: object, output_root: Path) -> None:
     _atomic_write_text(
         path,
         json.dumps(
@@ -406,6 +417,7 @@ def _atomic_write_json(path: Path, value: object) -> None:
             sort_keys=True,
         )
         + "\n",
+        output_root,
     )
 
 
@@ -453,10 +465,20 @@ def _select_split(
 ) -> tuple[tuple[ImageRecord, ...], tuple[ImageRecord, ...]]:
     records_by_group: dict[str, list[ImageRecord]] = {}
     class_groups = {class_id: set() for class_id in range(25)}
+    group_classes: dict[str, set[int]] = {}
     for record in audit.records:
         records_by_group.setdefault(record.group_id, []).append(record)
-        for class_id in {annotation.class_id for annotation in record.annotations}:
+        classes = {annotation.class_id for annotation in record.annotations}
+        group_classes.setdefault(record.group_id, set()).update(classes)
+        for class_id in classes:
             class_groups[class_id].add(record.group_id)
+
+    def preserves_train_groups(candidate: str, selected: set[str]) -> bool:
+        selected_with_candidate = selected | {candidate}
+        return all(
+            class_groups[class_id] - selected_with_candidate
+            for class_id in group_classes[candidate]
+        )
 
     val_groups: set[str] = set()
     for class_id in sorted(range(25), key=lambda item: (len(class_groups[item]), item)):
@@ -476,7 +498,18 @@ def _select_split(
             groups - val_groups,
             key=lambda group_id: _stable_rank(seed, group_id),
         )
-        val_groups.update(candidates[: max(0, target - selected)])
+        for candidate in candidates:
+            if selected >= target:
+                break
+            if preserves_train_groups(candidate, val_groups):
+                val_groups.add(candidate)
+                selected += 1
+        if selected < target:
+            raise ValueError(
+                f"class {class_id} validation target of {target} source groups "
+                "cannot be met while preserving at least one train source group "
+                "for every class"
+            )
 
     target_val_images = round(len(audit.records) * val_ratio)
     val_images = sum(len(records_by_group[group_id]) for group_id in val_groups)
@@ -487,8 +520,14 @@ def _select_split(
     for group_id in remaining_groups:
         if val_images >= target_val_images:
             break
-        val_groups.add(group_id)
-        val_images += len(records_by_group[group_id])
+        if preserves_train_groups(group_id, val_groups):
+            val_groups.add(group_id)
+            val_images += len(records_by_group[group_id])
+    if val_images < target_val_images:
+        raise ValueError(
+            f"validation image target of {target_val_images} cannot be met while "
+            "preserving at least one train source group for every class"
+        )
 
     train_records = tuple(record for record in audit.records if record.group_id not in val_groups)
     val_records = tuple(record for record in audit.records if record.group_id in val_groups)
@@ -646,6 +685,11 @@ def _analysis_markdown(report: Mapping[str, object]) -> str:
         "train": train["coarse_counts"],
         "val": val["coarse_counts"],
     }
+    source_group_counts = {
+        "source_groups": source["source_groups"],
+        "train_groups": train["source_groups"],
+        "val_groups": val["source_groups"],
+    }
     return (
         "# XH25 Dataset Analysis\n\n"
         f"- Source images: {source['images']}\n"
@@ -667,8 +711,12 @@ def _analysis_markdown(report: Mapping[str, object]) -> str:
         "```\n\n"
         "## Link modes\n\n"
         f"```json\n{json.dumps(report['link_mode_counts'], indent=2)}\n```\n\n"
+        "## Source target counts\n\n"
+        f"```json\n{json.dumps(source['targets'], indent=2)}\n```\n\n"
         "## Target counts\n\n"
-        f"```json\n{json.dumps(target_counts, indent=2)}\n```\n"
+        f"```json\n{json.dumps(target_counts, indent=2)}\n```\n\n"
+        "## Source group counts\n\n"
+        f"```json\n{json.dumps(source_group_counts, indent=2)}\n```\n"
     )
 
 
@@ -700,6 +748,22 @@ def prepare_dataset(
         )
     }
     coco = _coco_ground_truth(val_records, val_image_map)
+
+    manifests_dir = output_root / "manifests"
+    reports_dir = output_root / "reports"
+    metadata_paths = (
+        manifests_dir / "train.txt",
+        manifests_dir / "val.txt",
+        manifests_dir / "source-groups.json",
+        manifests_dir / "val-image-map.json",
+        manifests_dir / "demo-samples.json",
+        output_root / "dataset.yaml",
+        reports_dir / "dataset-analysis.json",
+        reports_dir / "dataset-analysis.md",
+        reports_dir / "val-ground-truth.json",
+    )
+    for metadata_path in metadata_paths:
+        _validate_output_target_parent(metadata_path, output_root)
 
     _reset_split_directories(source_root, output_root)
     link_mode_counts: Counter[str] = Counter()
@@ -749,20 +813,39 @@ def prepare_dataset(
         link_mode_counts,
     )
 
-    manifests_dir = output_root / "manifests"
-    reports_dir = output_root / "reports"
-    _atomic_write_text(manifests_dir / "train.txt", train_manifest)
-    _atomic_write_text(manifests_dir / "val.txt", val_manifest)
-    _atomic_write_json(manifests_dir / "source-groups.json", source_groups)
-    _atomic_write_json(manifests_dir / "val-image-map.json", val_image_map)
-    _atomic_write_json(manifests_dir / "demo-samples.json", demo_samples)
-    _atomic_write_text(output_root / "dataset.yaml", dataset_yaml)
-    _atomic_write_json(reports_dir / "dataset-analysis.json", analysis)
+    _atomic_write_text(manifests_dir / "train.txt", train_manifest, output_root)
+    _atomic_write_text(manifests_dir / "val.txt", val_manifest, output_root)
+    _atomic_write_json(
+        manifests_dir / "source-groups.json",
+        source_groups,
+        output_root,
+    )
+    _atomic_write_json(
+        manifests_dir / "val-image-map.json",
+        val_image_map,
+        output_root,
+    )
+    _atomic_write_json(
+        manifests_dir / "demo-samples.json",
+        demo_samples,
+        output_root,
+    )
+    _atomic_write_text(output_root / "dataset.yaml", dataset_yaml, output_root)
+    _atomic_write_json(
+        reports_dir / "dataset-analysis.json",
+        analysis,
+        output_root,
+    )
     _atomic_write_text(
         reports_dir / "dataset-analysis.md",
         _analysis_markdown(analysis),
+        output_root,
     )
-    _atomic_write_json(reports_dir / "val-ground-truth.json", coco)
+    _atomic_write_json(
+        reports_dir / "val-ground-truth.json",
+        coco,
+        output_root,
+    )
 
     train_groups = frozenset(record.group_id for record in train_records)
     val_groups = frozenset(record.group_id for record in val_records)

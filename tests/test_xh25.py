@@ -65,6 +65,24 @@ def _write_complete_source(source_root: Path) -> None:
                 _write_class_sample(source_root, group, class_id)
 
 
+def _write_multilabel_sample(
+    source_root: Path,
+    stem: str,
+    class_ids: range | tuple[int, ...],
+) -> None:
+    _write_image(source_root / "images" / "train" / f"{stem}.jpg", size=(16, 12))
+    _write_label(
+        source_root / "labels" / "train" / f"{stem}.txt",
+        "".join(f"{class_id} 0.5 0.5 0.5 0.5\n" for class_id in class_ids),
+    )
+
+
+def _markdown_json_section(markdown: str, heading: str) -> object:
+    marker = f"## {heading}\n\n```json\n"
+    section = markdown.split(marker, maxsplit=1)[1].split("\n```", maxsplit=1)[0]
+    return json.loads(section)
+
+
 def test_parse_yolo_hbb_label_returns_hbb_polygon(tmp_path: Path) -> None:
     label_path = tmp_path / "sample.txt"
     _write_label(label_path, "24 0.5 0.5 0.2 0.25\n")
@@ -536,9 +554,34 @@ def test_prepare_dataset_is_deterministic_group_safe_and_writes_metadata(
         "Coarse counts",
         "Near-duplicate candidates",
         "Link modes",
+        "Source target counts",
         "Target counts",
+        "Source group counts",
     ):
         assert heading in analysis_markdown
+    source_target_counts = _markdown_json_section(
+        analysis_markdown,
+        "Source target counts",
+    )
+    split_target_counts = _markdown_json_section(analysis_markdown, "Target counts")
+    source_group_counts = _markdown_json_section(
+        analysis_markdown,
+        "Source group counts",
+    )
+    assert source_target_counts == analysis["source"]["targets"]
+    assert source_target_counts["0"] == analysis["source"]["targets"]["0"]
+    assert source_target_counts["24"] == analysis["source"]["targets"]["24"]
+    assert split_target_counts == {
+        "train": analysis["split"]["train"]["targets"],
+        "val": analysis["split"]["val"]["targets"],
+    }
+    assert split_target_counts["train"]["0"] == analysis["split"]["train"]["targets"]["0"]
+    assert split_target_counts["val"]["24"] == analysis["split"]["val"]["targets"]["24"]
+    assert source_group_counts == {
+        "source_groups": analysis["source"]["source_groups"],
+        "train_groups": analysis["split"]["train"]["source_groups"],
+        "val_groups": analysis["split"]["val"]["source_groups"],
+    }
 
 
 def test_prepare_dataset_rejects_class_with_one_source_group(tmp_path: Path) -> None:
@@ -550,6 +593,33 @@ def test_prepare_dataset_rejects_class_with_one_source_group(tmp_path: Path) -> 
 
     with pytest.raises(ValueError, match=r"class 0.*source groups"):
         prepare_dataset(source_root, tmp_path / "output")
+
+
+def test_prepare_dataset_fill_preserves_one_train_group_for_multilabel_classes(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    _write_multilabel_sample(source_root, "g1", (0, 1))
+    _write_multilabel_sample(source_root, "x1", (1,))
+    _write_multilabel_sample(source_root, "g2", (0, 2))
+    _write_multilabel_sample(source_root, "x2", (2,))
+    _write_multilabel_sample(source_root, "g3", (0,))
+    for group_id in ("h1", "h2", "h3"):
+        _write_multilabel_sample(source_root, group_id, tuple(range(3, 25)))
+    for index in range(20):
+        _write_multilabel_sample(source_root, f"empty{index:02d}", ())
+
+    prepared = prepare_dataset(
+        source_root,
+        tmp_path / "output",
+        val_ratio=0.49,
+        seed=11,
+    )
+
+    assert {"g1", "g2"} <= prepared.val_groups
+    assert "g3" in prepared.train_groups
+    assert all(prepared.train_class_counts[class_id] > 0 for class_id in range(25))
+    assert all(prepared.val_class_counts[class_id] > 0 for class_id in range(25))
 
 
 @pytest.mark.parametrize("val_ratio", [float("nan"), float("inf"), -0.1, 0.0, 0.5, 1.0])
@@ -635,6 +705,73 @@ def test_prepare_dataset_refuses_to_materialize_over_source(tmp_path: Path) -> N
     assert (
         source_root / "labels" / "train" / "class00_group0_crop1.txt"
     ).read_bytes() == original_label
+
+
+@pytest.mark.parametrize("metadata_directory", ["manifests", "reports"])
+@pytest.mark.parametrize("target_kind", ["source", "external"])
+def test_prepare_dataset_rejects_metadata_directory_link_outside_output(
+    tmp_path: Path,
+    metadata_directory: str,
+    target_kind: str,
+) -> None:
+    source_root = tmp_path / "source"
+    output_root = tmp_path / "output"
+    external_root = tmp_path / "external"
+    _write_complete_source(source_root)
+    output_root.mkdir()
+    external_root.mkdir()
+    target = source_root if target_kind == "source" else external_root
+    linked_directory = output_root / metadata_directory
+    try:
+        linked_directory.symlink_to(target, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"directory symlinks unavailable: {error}")
+    before = {path.relative_to(target) for path in target.rglob("*")}
+
+    with pytest.raises(ValueError, match="outside output_root"):
+        prepare_dataset(source_root, output_root)
+
+    assert {path.relative_to(target) for path in target.rglob("*")} == before
+
+
+def test_prepare_dataset_accepts_ordinary_metadata_directories(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    output_root = tmp_path / "output"
+    _write_complete_source(source_root)
+    (output_root / "manifests").mkdir(parents=True)
+    (output_root / "reports").mkdir()
+
+    prepared = prepare_dataset(source_root, output_root)
+
+    assert prepared.output_root == output_root
+    assert (output_root / "manifests" / "train.txt").is_file()
+    assert (output_root / "reports" / "dataset-analysis.json").is_file()
+    assert (output_root / "dataset.yaml").is_file()
+
+
+def test_prepare_dataset_rejects_metadata_parent_resolving_outside_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    output_root = tmp_path / "output"
+    external_root = tmp_path / "external"
+    _write_complete_source(source_root)
+    output_root.mkdir()
+    external_root.mkdir()
+    original_resolve = Path.resolve
+
+    def resolve_metadata_link(path: Path, *args: object, **kwargs: object) -> Path:
+        if path == output_root / "manifests":
+            return original_resolve(external_root)
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", resolve_metadata_link)
+
+    with pytest.raises(ValueError, match="outside output_root"):
+        prepare_dataset(source_root, output_root)
+
+    assert list(external_root.iterdir()) == []
 
 
 def test_prepared_dataset_is_frozen_and_defensively_copies_collections() -> None:
