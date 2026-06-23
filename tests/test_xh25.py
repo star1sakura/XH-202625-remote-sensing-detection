@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import threading
 from collections import Counter
+from contextlib import contextmanager
 from dataclasses import FrozenInstanceError
 from itertools import combinations
 from pathlib import Path
@@ -862,6 +865,83 @@ def test_select_split_optimizes_stratification_to_exhaustive_best_objective() ->
     assert objectives[0] == objectives[1]
 
 
+def test_split_objective_matches_non_collinear_manual_and_exhaustive_oracle() -> None:
+    group_counts = {
+        "group-a": {**dict.fromkeys(range(25), 1), 0: 6, 24: 0},
+        "group-b": {**dict.fromkeys(range(25), 1), 4: 0, 24: 2},
+        "group-c": {**dict.fromkeys(range(25), 1), 0: 1, 4: 6, 24: 1},
+        "group-d": {**dict.fromkeys(range(25), 1), 0: 0, 4: 1, 24: 5},
+        "group-e": dict.fromkeys(range(25), 1),
+    }
+    records = tuple(
+        _memory_record(
+            group_id,
+            {class_id: count for class_id, count in counts.items() if count},
+        )
+        for group_id, counts in group_counts.items()
+    )
+    manual_candidate = tuple(
+        record for record in records if record.group_id in {"group-a", "group-d"}
+    )
+    assert _quality_objective(records, manual_candidate, 0.4) == pytest.approx(
+        (
+            4 / 15,
+            65813 / 304200,
+            1487 / 1170,
+            0.0,
+        )
+    )
+
+    targets = Counter(
+        annotation.class_id for record in records for annotation in record.annotations
+    )
+    images_per_class = Counter(
+        class_id
+        for record in records
+        for class_id in {annotation.class_id for annotation in record.annotations}
+    )
+    audit = DatasetAudit(
+        images=len(records),
+        labels=len(records),
+        targets=dict(targets),
+        images_per_class=dict(images_per_class),
+        dimensions={"1x1": len(records)},
+        modes={"L": len(records)},
+        source_groups=len(records),
+        invalid_lines=0,
+        near_duplicate_candidates=(),
+        records=records,
+    )
+    class_groups = {
+        class_id: {
+            record.group_id
+            for record in records
+            if any(annotation.class_id == class_id for annotation in record.annotations)
+        }
+        for class_id in range(25)
+    }
+    required = {
+        class_id: max(
+            2 if len(groups) >= 3 else 1,
+            min(len(groups) - 1, round(len(groups) * 0.4)),
+        )
+        for class_id, groups in class_groups.items()
+    }
+    oracle = min(
+        _quality_objective(records, tuple(candidate), 0.4)
+        for candidate in combinations(records, 2)
+        if all(
+            len({record.group_id for record in candidate} & class_groups[class_id])
+            >= required[class_id]
+            for class_id in range(25)
+        )
+    )
+
+    _, val_records = _select_split(audit, val_ratio=0.4, seed=0)
+
+    assert _quality_objective(records, val_records, 0.4) == pytest.approx(oracle)
+
+
 def test_validation_group_search_matches_exhaustive_feasibility_oracle() -> None:
     group_classes = {
         "g0": {0, 1},
@@ -1013,6 +1093,216 @@ def test_prepare_dataset_materialization_failure_preserves_previous_output(
     ] == []
 
 
+def test_prepare_dataset_holds_directory_locks_during_materialization_and_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    output_root = tmp_path / "output"
+    _write_complete_source(source_root)
+    from xh_detect.data import xh25
+
+    active_locks = 0
+    lock_scopes: list[tuple[Path, ...]] = []
+    original_link_or_copy = xh25._link_or_copy
+    original_atomic_write_text = xh25._atomic_write_text
+
+    @contextmanager
+    def track_directory_locks(paths: tuple[Path, ...]):
+        nonlocal active_locks
+        normalized = tuple(Path(path) for path in paths)
+        lock_scopes.append(normalized)
+        active_locks += 1
+        try:
+            yield
+        finally:
+            active_locks -= 1
+
+    def assert_locked_link(source: Path, destination: Path) -> str:
+        assert active_locks > 0
+        return original_link_or_copy(source, destination)
+
+    def assert_locked_write(path: Path, text: str, output: Path) -> None:
+        assert active_locks > 0
+        original_atomic_write_text(path, text, output)
+
+    monkeypatch.setattr(
+        xh25,
+        "_locked_directories",
+        track_directory_locks,
+        raising=False,
+    )
+    monkeypatch.setattr(xh25, "_link_or_copy", assert_locked_link)
+    monkeypatch.setattr(xh25, "_atomic_write_text", assert_locked_write)
+
+    prepare_dataset(source_root, output_root, seed=42)
+    prepare_dataset(source_root, output_root, seed=43)
+
+    assert any(
+        {path.name for path in scope} >= {"images", "labels", "manifests", "reports"}
+        for scope in lock_scopes
+    )
+    assert any(
+        len(scope) == 1 and scope[0].name.startswith(".output.backup-") for scope in lock_scopes
+    )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junction attack is Windows-only")
+def test_prepare_dataset_directory_lock_blocks_real_junction_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probe_target = tmp_path / "probe-target"
+    probe_link = tmp_path / "probe-link"
+    probe_target.mkdir()
+    probe = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(probe_link), str(probe_target)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if probe.returncode != 0:
+        pytest.skip(f"junction creation unavailable: {probe.stderr or probe.stdout}")
+    subprocess.run(
+        ["cmd", "/c", "rmdir", str(probe_link)],
+        capture_output=True,
+        check=True,
+    )
+
+    source_root = tmp_path / "source"
+    output_root = tmp_path / "output"
+    external_root = tmp_path / "external"
+    _write_complete_source(source_root)
+    external_root.mkdir()
+    original_link_or_copy = _link_or_copy
+    attack_results: dict[str, int] = {}
+    attacked = False
+
+    def attack_train_directory(train_directory: Path) -> None:
+        removal = subprocess.run(
+            ["cmd", "/c", "rmdir", str(train_directory)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        attack_results["remove"] = removal.returncode
+        if removal.returncode == 0:
+            junction = subprocess.run(
+                [
+                    "cmd",
+                    "/c",
+                    "mklink",
+                    "/J",
+                    str(train_directory),
+                    str(external_root),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            attack_results["junction"] = junction.returncode
+
+    def attack_before_first_write(source: Path, destination: Path) -> str:
+        nonlocal attacked
+        if not attacked and destination.parent.parts[-2:] == ("images", "train"):
+            attacked = True
+            thread = threading.Thread(
+                target=attack_train_directory,
+                args=(destination.parent,),
+            )
+            thread.start()
+            thread.join(timeout=10)
+            assert not thread.is_alive()
+        return original_link_or_copy(source, destination)
+
+    monkeypatch.setattr("xh_detect.data.xh25._link_or_copy", attack_before_first_write)
+
+    prepare_dataset(source_root, output_root)
+
+    assert attacked
+    assert attack_results["remove"] != 0
+    assert not list(external_root.glob("*.jpg"))
+    assert not list(external_root.glob("*.txt"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junction attack is Windows-only")
+def test_safe_remove_tree_lock_blocks_root_junction_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probe_target = tmp_path / "probe-target"
+    probe_link = tmp_path / "probe-link"
+    probe_target.mkdir()
+    probe = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(probe_link), str(probe_target)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if probe.returncode != 0:
+        pytest.skip(f"junction creation unavailable: {probe.stderr or probe.stdout}")
+    subprocess.run(
+        ["cmd", "/c", "rmdir", str(probe_link)],
+        capture_output=True,
+        check=True,
+    )
+
+    from xh_detect.data import xh25
+
+    cleanup_root = tmp_path / "cleanup-root"
+    external_root = tmp_path / "external"
+    cleanup_root.mkdir()
+    external_root.mkdir()
+    marker = external_root / "marker.txt"
+    marker.write_text("do not delete", encoding="utf-8")
+    original_scandir = os.scandir
+    attack_results: dict[str, int] = {}
+    attacked = False
+
+    def attack_cleanup_root() -> None:
+        removal = subprocess.run(
+            ["cmd", "/c", "rmdir", str(cleanup_root)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        attack_results["remove"] = removal.returncode
+        if removal.returncode == 0:
+            junction = subprocess.run(
+                [
+                    "cmd",
+                    "/c",
+                    "mklink",
+                    "/J",
+                    str(cleanup_root),
+                    str(external_root),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            attack_results["junction"] = junction.returncode
+
+    def attack_during_scandir(path: Path | str):
+        nonlocal attacked
+        if not attacked and Path(path) == cleanup_root:
+            attacked = True
+            thread = threading.Thread(target=attack_cleanup_root)
+            thread.start()
+            thread.join(timeout=10)
+            assert not thread.is_alive()
+        return original_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", attack_during_scandir)
+
+    xh25._safe_remove_tree(cleanup_root)
+
+    assert attacked
+    assert attack_results["remove"] != 0
+    assert marker.read_text(encoding="utf-8") == "do not delete"
+    assert not cleanup_root.exists()
+
+
 def test_prepare_dataset_publish_failure_restores_previous_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1037,6 +1327,47 @@ def test_prepare_dataset_publish_failure_restores_previous_output(
         prepare_dataset(source_root, output_root, seed=43)
 
     assert _recursive_tree_snapshot(output_root) == before
+    assert [path.name for path in tmp_path.iterdir() if path.name.startswith(".output.")] == []
+
+
+@pytest.mark.parametrize("existing_output", [False, True])
+def test_prepare_dataset_recognizes_replace_that_completed_before_wrapper_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    existing_output: bool,
+) -> None:
+    source_root = tmp_path / "source"
+    output_root = tmp_path / "output"
+    _write_complete_source(source_root)
+    before = None
+    if existing_output:
+        prepare_dataset(source_root, output_root, seed=42)
+        before = _recursive_tree_snapshot(output_root)
+    original_replace = os.replace
+    injected = False
+
+    def replace_then_raise(source: Path | str, destination: Path | str) -> None:
+        nonlocal injected
+        source_path = Path(source)
+        destination_path = Path(destination)
+        original_replace(source, destination)
+        if (
+            not injected
+            and destination_path == output_root
+            and source_path.name.startswith(".output.stage-")
+        ):
+            injected = True
+            raise RuntimeError("wrapper failed after successful replace")
+
+    monkeypatch.setattr(os, "replace", replace_then_raise)
+
+    prepared = prepare_dataset(source_root, output_root, seed=43)
+
+    assert injected
+    assert prepared.output_root == output_root
+    if before is not None:
+        assert _recursive_tree_snapshot(output_root) != before
+    assert not (output_root / ".xh25-transaction").exists()
     assert [path.name for path in tmp_path.iterdir() if path.name.startswith(".output.")] == []
 
 

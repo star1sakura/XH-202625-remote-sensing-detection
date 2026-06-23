@@ -14,16 +14,19 @@ from itertools import combinations
 from pathlib import Path
 from tempfile import NamedTemporaryFile, mkdtemp
 from types import MappingProxyType
+from uuid import uuid4
 
 import yaml
 from PIL import Image, UnidentifiedImageError
 
+from xh_detect.data.xh25_fs import locked_directories as _locked_directories
 from xh_detect.data.xh25_split import optimize_validation_groups
 from xh_detect.taxonomy import get_taxonomy
 from xh_detect.types import ObjectAnnotation, Polygon4
 
 _CROP_SUFFIX = re.compile(r"_crop\d+$", re.IGNORECASE)
 _BOUNDARY_TOLERANCE = 1e-6
+_TRANSACTION_MARKER_NAME = ".xh25-transaction"
 
 
 @dataclass(frozen=True)
@@ -397,20 +400,24 @@ def _safe_remove_tree(path: Path) -> None:
     if not os.path.lexists(path):
         return
     if _is_reparse_point(path):
-        _remove_reparse_point(path)
-        return
+        raise ValueError(f"refusing to clean reparse point root: {path}")
     if not path.is_dir():
         path.unlink()
         return
-    with os.scandir(path) as entries:
-        children = [Path(entry.path) for entry in entries]
-    for child in children:
-        if _is_reparse_point(child):
-            _remove_reparse_point(child)
-        elif stat.S_ISDIR(os.lstat(child).st_mode):
-            _safe_remove_tree(child)
-        else:
-            child.unlink()
+    with _locked_directories((path,)):
+        if _is_reparse_point(path):
+            raise ValueError(f"refusing to clean reparse point root: {path}")
+        with os.scandir(path) as entries:
+            children = [Path(entry.path) for entry in entries]
+        for child in children:
+            if _is_reparse_point(child):
+                _remove_reparse_point(child)
+            elif stat.S_ISDIR(os.lstat(child).st_mode):
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+    if _is_reparse_point(path):
+        raise ValueError(f"refusing to clean replaced reparse point root: {path}")
     path.rmdir()
 
 
@@ -484,43 +491,6 @@ def _atomic_write_json(path: Path, value: object, output_root: Path) -> None:
         + "\n",
         output_root,
     )
-
-
-def _split_directories(output_root: Path) -> tuple[Path, ...]:
-    return (
-        output_root / "images" / "train",
-        output_root / "images" / "val",
-        output_root / "labels" / "train",
-        output_root / "labels" / "val",
-    )
-
-
-def _reset_split_directories(source_root: Path, output_root: Path) -> None:
-    resolved_output = output_root.resolve()
-    source_data_directories = (
-        (source_root / "images" / "train").resolve(),
-        (source_root / "labels" / "train").resolve(),
-    )
-    for directory in _split_directories(output_root):
-        resolved_directory = directory.resolve()
-        if resolved_directory == resolved_output or not resolved_directory.is_relative_to(
-            resolved_output
-        ):
-            raise ValueError(f"refusing to clean split directory outside output_root: {directory}")
-        if any(
-            source_directory == resolved_directory
-            or source_directory.is_relative_to(resolved_directory)
-            or resolved_directory.is_relative_to(source_directory)
-            for source_directory in source_data_directories
-        ):
-            raise ValueError(f"output split directory would contain source data: {directory}")
-        if directory.is_symlink():
-            raise ValueError(f"refusing to recursively clean symlink: {directory}")
-        if directory.exists():
-            if not directory.is_dir():
-                raise ValueError(f"output split path is not a directory: {directory}")
-            shutil.rmtree(directory)
-        directory.mkdir(parents=True, exist_ok=True)
 
 
 def _select_validation_groups(
@@ -989,7 +959,7 @@ def _validate_materialized_dataset(
         raise ValueError("materialized COCO image IDs are inconsistent")
 
 
-def _materialize_dataset(
+def _materialize_locked_stage(
     audit: DatasetAudit,
     train_records: tuple[ImageRecord, ...],
     val_records: tuple[ImageRecord, ...],
@@ -997,8 +967,8 @@ def _materialize_dataset(
     published_root: Path,
     val_ratio: float,
     seed: int,
+    transaction_id: str,
 ) -> None:
-    _create_stage_directories(stage_root)
     demo_samples = _demo_samples(val_records)
     val_image_map = {
         record.stem: image_id
@@ -1063,7 +1033,37 @@ def _materialize_dataset(
         stage_root,
     )
     _atomic_write_json(reports_dir / "val-ground-truth.json", coco, stage_root)
+    _atomic_write_text(
+        stage_root / _TRANSACTION_MARKER_NAME,
+        transaction_id,
+        stage_root,
+    )
     _validate_materialized_dataset(stage_root, train_records, val_records)
+
+
+def _materialize_into_stage(
+    audit: DatasetAudit,
+    train_records: tuple[ImageRecord, ...],
+    val_records: tuple[ImageRecord, ...],
+    stage_root: Path,
+    published_root: Path,
+    val_ratio: float,
+    seed: int,
+    transaction_id: str,
+) -> None:
+    _create_stage_directories(stage_root)
+    with _locked_directories((stage_root, *_fixed_output_directories(stage_root))):
+        _validate_output_tree_paths(stage_root)
+        _materialize_locked_stage(
+            audit,
+            train_records,
+            val_records,
+            stage_root,
+            published_root,
+            val_ratio,
+            seed,
+            transaction_id,
+        )
 
 
 def _reserve_sibling_path(output_root: Path, kind: str) -> Path:
@@ -1080,8 +1080,24 @@ def _reserve_sibling_path(output_root: Path, kind: str) -> Path:
 def _cleanup_or_report(path: Path, kind: str) -> None:
     try:
         _safe_remove_tree(path)
-    except OSError as error:
+    except (OSError, ValueError) as error:
         raise RuntimeError(f"retained {kind} after safe cleanup failure: {path}") from error
+
+
+def _transaction_marker_matches(root: Path, transaction_id: str) -> bool:
+    try:
+        _assert_no_reparse_points(root)
+    except ValueError:
+        return False
+    marker = root / _TRANSACTION_MARKER_NAME
+    if _is_reparse_point(marker):
+        return False
+    try:
+        if not stat.S_ISREG(os.lstat(marker).st_mode):
+            return False
+        return marker.read_text(encoding="utf-8") == transaction_id
+    except OSError:
+        return False
 
 
 def prepare_dataset(
@@ -1126,10 +1142,12 @@ def prepare_dataset(
         )
     )
     backup_root: Path | None = None
+    failed_root: Path | None = None
     published = False
     publication_validated = False
+    transaction_id = uuid4().hex
     try:
-        _materialize_dataset(
+        _materialize_into_stage(
             audit,
             train_records,
             val_records,
@@ -1137,6 +1155,7 @@ def prepare_dataset(
             output_root,
             val_ratio,
             seed,
+            transaction_id,
         )
         _validate_output_tree_paths(output_root)
         _validate_output_tree_paths(stage_root)
@@ -1146,11 +1165,22 @@ def prepare_dataset(
         try:
             os.replace(stage_root, output_root)
             published = True
-        except OSError:
-            if backup_root is not None and os.path.lexists(backup_root):
-                os.replace(backup_root, output_root)
-                backup_root = None
-            raise
+        except BaseException:
+            if (
+                not os.path.lexists(stage_root)
+                and os.path.lexists(output_root)
+                and _transaction_marker_matches(output_root, transaction_id)
+            ):
+                published = True
+            else:
+                if os.path.lexists(output_root):
+                    failed_root = _reserve_sibling_path(output_root, "failed")
+                    os.replace(output_root, failed_root)
+                raise
+        marker_path = output_root / _TRANSACTION_MARKER_NAME
+        if not _transaction_marker_matches(output_root, transaction_id):
+            raise RuntimeError("published output transaction marker does not match")
+        marker_path.unlink()
         _validate_materialized_dataset(output_root, train_records, val_records)
         publication_validated = True
         if backup_root is not None:
@@ -1171,6 +1201,9 @@ def prepare_dataset(
         if backup_root is not None and os.path.lexists(backup_root):
             os.replace(backup_root, output_root)
             backup_root = None
+        if failed_root is not None and os.path.lexists(failed_root):
+            _cleanup_or_report(failed_root, "failed output")
+            failed_root = None
         if os.path.lexists(stage_root):
             _cleanup_or_report(stage_root, "stage")
         raise
