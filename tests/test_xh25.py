@@ -683,6 +683,22 @@ def test_prepare_dataset_is_deterministic_group_safe_and_writes_metadata(
     }
 
 
+def test_prepare_dataset_rejects_existing_regular_file_output_root(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    output_root = tmp_path / "output"
+    sentinel = "keep this file unchanged\n"
+    _write_complete_source(source_root)
+    output_root.write_text(sentinel, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"output_root.*directory"):
+        prepare_dataset(source_root, output_root)
+
+    assert output_root.is_file()
+    assert output_root.read_text(encoding="utf-8") == sentinel
+
+
 def test_prepare_dataset_rejects_class_with_one_source_group(tmp_path: Path) -> None:
     source_root = tmp_path / "source"
     _write_class_sample(source_root, "class00_only", 0)

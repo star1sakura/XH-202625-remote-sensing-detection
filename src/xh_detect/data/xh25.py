@@ -26,7 +26,7 @@ from xh_detect.data.xh25_fs import (
 from xh_detect.data.xh25_fs import (
     locked_directories as _locked_directories,
 )
-from xh_detect.data.xh25_split import optimize_validation_groups
+from xh_detect.data.xh25_split import _required_val_group_counts, optimize_validation_groups
 from xh_detect.taxonomy import get_taxonomy
 from xh_detect.types import ObjectAnnotation, Polygon4
 
@@ -664,7 +664,6 @@ def _select_validation_groups(
     val_ratio: float,
     seed: int,
 ) -> frozenset[str]:
-    required_val_groups: dict[int, int] = {}
     class_group_counts: dict[int, int] = {}
     for class_id in range(25):
         groups = class_groups[class_id]
@@ -675,10 +674,7 @@ def _select_validation_groups(
                 f"found {group_count} source groups"
             )
         class_group_counts[class_id] = group_count
-        required_val_groups[class_id] = max(
-            1,
-            min(group_count - 1, round(group_count * val_ratio)),
-        )
+    required_val_groups = _required_val_group_counts(class_groups, val_ratio)
 
     ranked_class_groups = {
         class_id: tuple(
@@ -1055,6 +1051,15 @@ def _validate_output_tree_paths(output_root: Path) -> None:
         _validate_output_target_parent(metadata_path, output_root)
 
 
+def _validate_existing_output_root(output_root: Path) -> None:
+    try:
+        output_mode = os.lstat(output_root).st_mode
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(output_mode):
+        raise ValueError(f"output_root must be a directory when it already exists: {output_root}")
+
+
 def _create_stage_directories(stage_root: Path) -> None:
     _validate_output_tree_paths(stage_root)
     for directory in _fixed_output_directories(stage_root):
@@ -1294,6 +1299,7 @@ def prepare_dataset(
         )
 
     _validate_output_tree_paths(output_root)
+    _validate_existing_output_root(output_root)
     audit = audit_dataset(source_root)
     train_records, val_records = _select_split(audit, val_ratio, seed)
     _assert_no_reparse_points(output_root.parent)
@@ -1322,6 +1328,7 @@ def prepare_dataset(
             transaction_id,
         )
         _validate_output_tree_paths(output_root)
+        _validate_existing_output_root(output_root)
         _validate_output_tree_paths(stage_root)
         if os.path.lexists(output_root):
             backup_root = _reserve_sibling_path(output_root, "backup")
