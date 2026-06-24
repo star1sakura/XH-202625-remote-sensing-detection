@@ -45,9 +45,8 @@ def _required_val_group_counts(
     required: dict[int, int] = {}
     for class_id in range(_CLASS_COUNT):
         group_count = len(class_groups[class_id])
-        minimum = 2 if group_count >= 3 else 1
         required[class_id] = max(
-            minimum,
+            1,
             min(group_count - 1, round(group_count * val_ratio)),
         )
     return required

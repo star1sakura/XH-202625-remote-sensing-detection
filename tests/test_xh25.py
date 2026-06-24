@@ -28,6 +28,7 @@ from xh_detect.data.xh25 import (
     prepare_dataset,
     source_group_id,
 )
+from xh_detect.data.xh25_split import _required_val_group_counts
 from xh_detect.taxonomy import get_taxonomy
 from xh_detect.types import ObjectAnnotation
 
@@ -715,8 +716,9 @@ def test_prepare_dataset_fill_preserves_one_train_group_for_multilabel_classes(
     )
 
     class_zero_groups = {"g1", "g2", "g3"}
-    assert len(class_zero_groups & prepared.val_groups) == 2
-    assert len(class_zero_groups & prepared.train_groups) == 1
+    assert len(prepared.val_groups) == round(28 * 0.49)
+    assert len(class_zero_groups & prepared.val_groups) == 1
+    assert len(class_zero_groups & prepared.train_groups) == 2
     assert all(prepared.train_class_counts[class_id] > 0 for class_id in range(25))
     assert all(prepared.val_class_counts[class_id] > 0 for class_id in range(25))
 
@@ -745,8 +747,8 @@ def test_prepare_dataset_backtracks_to_find_valid_multilabel_split(
         seed=0,
     )
 
-    assert prepared.val_groups == frozenset({"g1", "g2", "g3", "h0", "h1"})
-    assert prepared.train_groups == frozenset({"g0", "g4", "h2"})
+    assert prepared.val_groups == frozenset({"g0", "g4", "h0"})
+    assert prepared.train_groups == frozenset({"g1", "g2", "g3", "h1", "h2"})
     assert all(prepared.train_class_counts[class_id] > 0 for class_id in range(25))
     assert all(prepared.val_class_counts[class_id] > 0 for class_id in range(25))
 
@@ -874,6 +876,53 @@ def test_select_split_optimizes_stratification_to_exhaustive_best_objective() ->
     assert objectives[0] == objectives[1]
 
 
+def test_select_split_keeps_three_group_classes_ratio_aware() -> None:
+    records = tuple(
+        _memory_record(f"class{class_id:02d}-group{group_index}", {class_id: 1})
+        for class_id in range(25)
+        for group_index in range(3)
+    )
+    audit = DatasetAudit(
+        images=len(records),
+        labels=len(records),
+        targets=dict.fromkeys(range(25), 3),
+        images_per_class=dict.fromkeys(range(25), 3),
+        dimensions={"1x1": len(records)},
+        modes={"L": len(records)},
+        source_groups=len(records),
+        invalid_lines=0,
+        near_duplicate_candidates=(),
+        records=records,
+    )
+
+    train_records, val_records = _select_split(audit, val_ratio=0.15, seed=42)
+
+    train_classes = {
+        annotation.class_id for record in train_records for annotation in record.annotations
+    }
+    val_classes = {
+        annotation.class_id for record in val_records for annotation in record.annotations
+    }
+    assert train_classes == set(range(25))
+    assert val_classes == set(range(25))
+    assert len(val_records) == 25
+
+
+def test_required_val_group_counts_are_ratio_aware_for_three_groups() -> None:
+    class_groups = {
+        class_id: {
+            f"class{class_id:02d}-group0",
+            f"class{class_id:02d}-group1",
+            f"class{class_id:02d}-group2",
+        }
+        for class_id in range(25)
+    }
+
+    required = _required_val_group_counts(class_groups, val_ratio=0.15)
+
+    assert required == dict.fromkeys(range(25), 1)
+
+
 def test_split_objective_matches_non_collinear_manual_and_exhaustive_oracle() -> None:
     group_counts = {
         "group-a": {**dict.fromkeys(range(25), 1), 0: 6, 24: 0},
@@ -929,13 +978,7 @@ def test_split_objective_matches_non_collinear_manual_and_exhaustive_oracle() ->
         }
         for class_id in range(25)
     }
-    required = {
-        class_id: max(
-            2 if len(groups) >= 3 else 1,
-            min(len(groups) - 1, round(len(groups) * 0.4)),
-        )
-        for class_id, groups in class_groups.items()
-    }
+    required = _required_val_group_counts(class_groups, 0.4)
     oracle = min(
         _quality_objective(records, tuple(candidate), 0.4)
         for candidate in combinations(records, 2)
@@ -970,13 +1013,7 @@ def test_validation_group_search_matches_exhaustive_feasibility_oracle() -> None
     for group_id, class_ids in group_classes.items():
         for class_id in class_ids:
             class_groups[class_id].add(group_id)
-    required = {
-        class_id: max(
-            2 if len(groups) >= 3 else 1,
-            min(len(groups) - 1, round(len(groups) * 0.49)),
-        )
-        for class_id, groups in class_groups.items()
-    }
+    required = _required_val_group_counts(class_groups, 0.49)
     all_groups = tuple(group_classes)
     feasible = {
         frozenset(candidate)

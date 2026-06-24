@@ -675,9 +675,8 @@ def _select_validation_groups(
                 f"found {group_count} source groups"
             )
         class_group_counts[class_id] = group_count
-        minimum = 2 if group_count >= 3 else 1
         required_val_groups[class_id] = max(
-            minimum,
+            1,
             min(group_count - 1, round(group_count * val_ratio)),
         )
 
