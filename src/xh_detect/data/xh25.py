@@ -1357,7 +1357,7 @@ def prepare_dataset(
         if published and os.path.lexists(output_root):
             try:
                 _safe_remove_tree(output_root)
-            except OSError as error:
+            except (OSError, ValueError) as error:
                 if backup_root is not None:
                     raise RuntimeError(
                         f"retained backup after rollback cleanup failure: {backup_root}"

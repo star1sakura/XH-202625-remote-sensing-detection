@@ -173,6 +173,14 @@ def _quality_objective(
     )
 
 
+def test_data_package_exports_prepare_dataset_api() -> None:
+    from xh_detect.data import PreparedDataset as ExportedPreparedDataset
+    from xh_detect.data import prepare_dataset as exported_prepare_dataset
+
+    assert ExportedPreparedDataset is PreparedDataset
+    assert exported_prepare_dataset is prepare_dataset
+
+
 def test_parse_yolo_hbb_label_returns_hbb_polygon(tmp_path: Path) -> None:
     label_path = tmp_path / "sample.txt"
     _write_label(label_path, "24 0.5 0.5 0.2 0.25\n")
@@ -1487,6 +1495,42 @@ def test_prepare_dataset_retains_backup_if_safe_cleanup_fails(
     assert len(backups) == 1
     assert _recursive_tree_snapshot(backups[0]) == before
     assert _recursive_tree_snapshot(output_root) != before
+
+
+def test_prepare_dataset_retains_backup_if_rollback_cleanup_is_safety_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    output_root = tmp_path / "output"
+    _write_complete_source(source_root)
+    prepare_dataset(source_root, output_root, seed=42)
+    before = _recursive_tree_snapshot(output_root)
+    from xh_detect.data import xh25
+
+    original_safe_remove_tree = xh25._safe_remove_tree
+
+    def fail_output_cleanup(path: Path) -> None:
+        if Path(path).name == output_root.name:
+            raise ValueError("unsafe cleanup")
+        original_safe_remove_tree(path)
+
+    def fail_after_publish(root: Path, *args: object, **kwargs: object) -> None:
+        if Path(root).name == output_root.name:
+            raise RuntimeError("injected post-publish validation failure")
+
+    monkeypatch.setattr(xh25, "_safe_remove_tree", fail_output_cleanup)
+    monkeypatch.setattr(xh25, "_validate_materialized_dataset", fail_after_publish)
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"retained backup after rollback cleanup failure: .*\.output\.backup-",
+    ):
+        prepare_dataset(source_root, output_root, seed=43)
+
+    backups = [path for path in tmp_path.iterdir() if path.name.startswith(".output.backup-")]
+    assert len(backups) == 1
+    assert _recursive_tree_snapshot(backups[0]) == before
 
 
 @pytest.mark.parametrize("reparse_name", ["output", "manifests"])
