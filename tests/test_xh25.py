@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import subprocess
@@ -1142,9 +1143,10 @@ def test_prepare_dataset_holds_directory_locks_during_materialization_and_cleanu
         {path.name for path in scope} >= {"images", "labels", "manifests", "reports"}
         for scope in lock_scopes
     )
-    assert any(
-        len(scope) == 1 and scope[0].name.startswith(".output.backup-") for scope in lock_scopes
-    )
+    if os.name != "nt":
+        assert any(
+            len(scope) == 1 and scope[0].name.startswith(".output.backup-") for scope in lock_scopes
+        )
 
 
 @pytest.mark.skipif(os.name != "nt", reason="NTFS junction attack is Windows-only")
@@ -1301,6 +1303,93 @@ def test_safe_remove_tree_lock_blocks_root_junction_replacement(
     assert attack_results["remove"] != 0
     assert marker.read_text(encoding="utf-8") == "do not delete"
     assert not cleanup_root.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle cleanup is Windows-only")
+def test_safe_remove_tree_windows_deletes_nested_directories_without_shutil_rmtree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from xh_detect.data import xh25
+
+    cleanup_root = tmp_path / "cleanup-root"
+    nested = cleanup_root / "nested"
+    nested.mkdir(parents=True)
+    (nested / "marker.txt").write_text("remove me", encoding="utf-8")
+    rmtree_calls: list[Path] = []
+
+    def fail_rmtree(path: Path | str, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        rmtree_calls.append(Path(path))
+        raise AssertionError("Windows cleanup must not delegate nested trees to shutil.rmtree")
+
+    monkeypatch.setattr(xh25.shutil, "rmtree", fail_rmtree)
+
+    xh25._safe_remove_tree(cleanup_root)
+
+    assert rmtree_calls == []
+    assert not cleanup_root.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junction cleanup is Windows-only")
+def test_safe_remove_tree_removes_nested_junction_without_touching_target(
+    tmp_path: Path,
+) -> None:
+    from xh_detect.data import xh25
+
+    cleanup_root = tmp_path / "cleanup-root"
+    nested = cleanup_root / "nested"
+    external_root = tmp_path / "external"
+    nested.mkdir(parents=True)
+    external_root.mkdir()
+    marker = external_root / "marker.txt"
+    marker.write_text("do not delete", encoding="utf-8")
+    junction = nested / "junction"
+    created = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction), str(external_root)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if created.returncode != 0:
+        pytest.skip(f"junction creation unavailable: {created.stderr or created.stdout}")
+
+    xh25._safe_remove_tree(cleanup_root)
+
+    assert marker.read_text(encoding="utf-8") == "do not delete"
+    assert not cleanup_root.exists()
+
+
+def test_open_windows_directory_createfile_failure_preserves_winerror(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from xh_detect.data import xh25_fs
+
+    class FakeFunction:
+        argtypes: object
+        restype: object
+
+        def __init__(self, result: object) -> None:
+            self.result = result
+
+        def __call__(self, *args: object) -> object:
+            del args
+            return self.result
+
+    class FakeKernel32:
+        def __init__(self) -> None:
+            self.CreateFileW = FakeFunction(ctypes.c_void_p(-1).value)
+            self.GetFileInformationByHandle = FakeFunction(0)
+            self.CloseHandle = FakeFunction(1)
+
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *args, **kwargs: FakeKernel32(), raising=False)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 3, raising=False)
+
+    with pytest.raises(OSError) as error:
+        xh25_fs._open_windows_directory(Path("missing-directory"))
+
+    assert getattr(error.value, "winerror", None) == 3
+    assert not isinstance(error.value, ProcessLookupError)
 
 
 def test_prepare_dataset_publish_failure_restores_previous_output(

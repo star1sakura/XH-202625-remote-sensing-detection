@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import math
@@ -19,7 +20,12 @@ from uuid import uuid4
 import yaml
 from PIL import Image, UnidentifiedImageError
 
-from xh_detect.data.xh25_fs import locked_directories as _locked_directories
+from xh_detect.data.xh25_fs import (
+    _windows_error,
+)
+from xh_detect.data.xh25_fs import (
+    locked_directories as _locked_directories,
+)
 from xh_detect.data.xh25_split import optimize_validation_groups
 from xh_detect.taxonomy import get_taxonomy
 from xh_detect.types import ObjectAnnotation, Polygon4
@@ -27,6 +33,7 @@ from xh_detect.types import ObjectAnnotation, Polygon4
 _CROP_SUFFIX = re.compile(r"_crop\d+$", re.IGNORECASE)
 _BOUNDARY_TOLERANCE = 1e-6
 _TRANSACTION_MARKER_NAME = ".xh25-transaction"
+_WINDOWS_DELETE_RETRIES = 3
 
 
 @dataclass(frozen=True)
@@ -395,9 +402,167 @@ def _remove_reparse_point(path: Path) -> None:
         path.rmdir()
 
 
+def _open_windows_delete_handle(path: Path) -> int:
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+
+    file_read_attributes = 0x0080
+    delete_access = 0x00010000
+    file_share_read = 0x0001
+    file_share_write = 0x0002
+    open_existing = 3
+    file_flag_backup_semantics = 0x02000000
+    file_flag_open_reparse_point = 0x00200000
+    invalid_handle = ctypes.c_void_p(-1).value
+    handle = create_file(
+        str(path),
+        file_read_attributes | delete_access,
+        file_share_read | file_share_write,
+        None,
+        open_existing,
+        file_flag_backup_semantics | file_flag_open_reparse_point,
+        None,
+    )
+    if handle == invalid_handle:
+        error = ctypes.get_last_error()
+        if error in {2, 3} and not os.path.lexists(path):
+            return 0
+        raise _windows_error(error, "cannot open cleanup entry", path)
+    return int(handle)
+
+
+def _close_windows_delete_handle(handle: int, path: Path) -> None:
+    from ctypes import wintypes
+
+    if handle == 0:
+        return
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+    if not close_handle(handle):
+        raise _windows_error(ctypes.get_last_error(), "cannot close cleanup entry", path)
+
+
+def _windows_handle_file_attributes(handle: int, path: Path) -> int:
+    from ctypes import wintypes
+
+    class FileAttributeTagInfo(ctypes.Structure):
+        _fields_ = [
+            ("file_attributes", wintypes.DWORD),
+            ("reparse_tag", wintypes.DWORD),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    get_information = kernel32.GetFileInformationByHandleEx
+    get_information.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    get_information.restype = wintypes.BOOL
+
+    file_attribute_tag_info = 9
+    information = FileAttributeTagInfo()
+    if not get_information(
+        handle,
+        file_attribute_tag_info,
+        ctypes.byref(information),
+        ctypes.sizeof(information),
+    ):
+        raise _windows_error(ctypes.get_last_error(), "cannot inspect cleanup entry", path)
+    return int(information.file_attributes)
+
+
+def _mark_windows_handle_for_deletion(handle: int, path: Path) -> None:
+    from ctypes import wintypes
+
+    class FileDispositionInfo(ctypes.Structure):
+        _fields_ = [("delete_file", ctypes.c_ubyte)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    set_information = kernel32.SetFileInformationByHandle
+    set_information.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    set_information.restype = wintypes.BOOL
+
+    file_disposition_info = 4
+    disposition = FileDispositionInfo(1)
+    if not set_information(
+        handle,
+        file_disposition_info,
+        ctypes.byref(disposition),
+        ctypes.sizeof(disposition),
+    ):
+        raise _windows_error(ctypes.get_last_error(), "cannot delete cleanup entry", path)
+
+
+def _remove_windows_tree_entry(path: Path, *, reject_reparse_root: bool = False) -> None:
+    path = Path(path)
+    if not os.path.lexists(path):
+        return
+
+    file_attribute_directory = 0x0010
+    file_attribute_reparse_point = 0x0400
+    error_dir_not_empty = 145
+    last_error: OSError | None = None
+    for attempt in range(_WINDOWS_DELETE_RETRIES):
+        handle = _open_windows_delete_handle(path)
+        if handle == 0:
+            return
+        try:
+            attributes = _windows_handle_file_attributes(handle, path)
+            if reject_reparse_root and attributes & file_attribute_reparse_point:
+                raise ValueError(f"refusing to clean reparse point root: {path}")
+            is_directory = bool(attributes & file_attribute_directory)
+            is_reparse_point = bool(attributes & file_attribute_reparse_point)
+            if is_directory and not is_reparse_point:
+                with os.scandir(path) as entries:
+                    children = [Path(entry.path) for entry in entries]
+                for child in children:
+                    _remove_windows_tree_entry(child)
+            try:
+                _mark_windows_handle_for_deletion(handle, path)
+                return
+            except OSError as error:
+                if (
+                    is_directory
+                    and not is_reparse_point
+                    and getattr(error, "winerror", None) == error_dir_not_empty
+                    and attempt + 1 < _WINDOWS_DELETE_RETRIES
+                ):
+                    last_error = error
+                    continue
+                raise
+        finally:
+            _close_windows_delete_handle(handle, path)
+    if last_error is not None:
+        raise last_error
+
+
 def _safe_remove_tree(path: Path) -> None:
     path = Path(path)
     if not os.path.lexists(path):
+        return
+    if os.name == "nt":
+        _remove_windows_tree_entry(path, reject_reparse_root=True)
         return
     if _is_reparse_point(path):
         raise ValueError(f"refusing to clean reparse point root: {path}")

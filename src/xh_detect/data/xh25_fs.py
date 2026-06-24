@@ -8,6 +8,19 @@ from contextlib import contextmanager
 from pathlib import Path
 
 
+def _windows_error(code: int, message: str, path: Path | None = None) -> OSError:
+    win_error = getattr(ctypes, "WinError", None)
+    if win_error is not None:
+        error = win_error(code)
+        error.strerror = f"{message}: {error.strerror}"
+        if path is not None:
+            error.filename = str(path)
+        return error
+    error = OSError(0, message, str(path) if path is not None else None)
+    error.winerror = code  # type: ignore[attr-defined]
+    return error
+
+
 def _open_windows_directory(path: Path) -> int:
     from ctypes import wintypes
 
@@ -66,13 +79,13 @@ def _open_windows_directory(path: Path) -> int:
     )
     if handle == invalid_handle:
         error = ctypes.get_last_error()
-        raise OSError(error, f"cannot lock directory: {path}")
+        raise _windows_error(error, "cannot lock directory", path)
 
     information = ByHandleFileInformation()
     if not get_information(handle, ctypes.byref(information)):
         error = ctypes.get_last_error()
         close_handle(handle)
-        raise OSError(error, f"cannot inspect locked directory: {path}")
+        raise _windows_error(error, "cannot inspect locked directory", path)
     file_attribute_directory = 0x0010
     file_attribute_reparse_point = 0x0400
     if information.file_attributes & file_attribute_reparse_point:
@@ -93,7 +106,7 @@ def _close_windows_handle(handle: int) -> None:
     close_handle.restype = wintypes.BOOL
     if not close_handle(handle):
         error = ctypes.get_last_error()
-        raise OSError(error, "cannot close directory lock")
+        raise _windows_error(error, "cannot close directory lock")
 
 
 @contextmanager
