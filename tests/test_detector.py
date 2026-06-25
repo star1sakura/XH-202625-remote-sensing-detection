@@ -116,12 +116,17 @@ class FakeResult:
         self.boxes = boxes
 
 
+class FakeHbbResult:
+    def __init__(self, boxes: FakeBoxes | None) -> None:
+        self.boxes = boxes
+
+
 class FakeModel:
-    def __init__(self, results: list[FakeResult]) -> None:
+    def __init__(self, results: list[object]) -> None:
         self.results = results
         self.calls: list[dict[str, object]] = []
 
-    def predict(self, **kwargs: object) -> list[FakeResult]:
+    def predict(self, **kwargs: object) -> list[object]:
         self.calls.append(kwargs)
         return self.results
 
@@ -465,7 +470,7 @@ def test_extract_hbb_predictions_converts_xyxy_to_polygon() -> None:
     from xh_detect.detector import _extract_predictions
 
     boxes = FakeBoxes(boxes=[[10, 20, 30, 40]], classes=[24], scores=[0.9])
-    result = FakeResult(obb=None, boxes=boxes)
+    result = FakeHbbResult(boxes=boxes)
 
     predictions = _extract_predictions(result, result_index=0, task="detect")
 
@@ -489,10 +494,100 @@ def test_extract_hbb_predictions_converts_xyxy_to_polygon() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    "coordinates",
+    [
+        [10, 20, 30, 40],
+        [[10, 20, 30, 40, 50]],
+        [[[10], [20], [30], [40]]],
+    ],
+)
+def test_extract_hbb_predictions_rejects_invalid_xyxy_shape(coordinates: object) -> None:
+    from xh_detect.detector import _extract_predictions
+
+    boxes = FakeBoxes(boxes=coordinates, classes=[0], scores=[0.5])
+    result = FakeHbbResult(boxes=boxes)
+
+    with pytest.raises(ValueError, match="invalid HBB shape"):
+        _extract_predictions(result, result_index=0, task="detect")
+
+
+def test_extract_hbb_predictions_rejects_inconsistent_lengths() -> None:
+    from xh_detect.detector import _extract_predictions
+
+    boxes = FakeBoxes(
+        boxes=[[10, 20, 30, 40], [50, 60, 70, 80]],
+        classes=[0],
+        scores=[0.5, 0.75, 0.9],
+    )
+    result = FakeHbbResult(boxes=boxes)
+
+    with pytest.raises(ValueError, match="inconsistent HBB lengths"):
+        _extract_predictions(result, result_index=0, task="detect")
+
+
+def test_ultralytics_detect_task_dispatches_through_hbb_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from xh_detect import detector as detector_module
+
+    images = [np.zeros((4, 4, 3), dtype=np.uint8)]
+    boxes = FakeBoxes(boxes=[[10, 20, 30, 40]], classes=[3], scores=[0.8])
+    fake_model = FakeModel([FakeHbbResult(boxes)])
+    captured_paths: list[str] = []
+
+    def fake_yolo(model_path: str) -> FakeModel:
+        captured_paths.append(model_path)
+        return fake_model
+
+    monkeypatch.setattr(detector_module, "YOLO", fake_yolo)
+    detector = detector_module.UltralyticsDetector(
+        model_path="detect-weights.pt",
+        device="cpu",
+        image_size=512,
+        half=False,
+        task="detect",
+    )
+
+    predictions = detector.predict(images, confidence=0.35)
+
+    assert captured_paths == ["detect-weights.pt"]
+    assert fake_model.calls == [
+        {
+            "source": images,
+            "imgsz": 512,
+            "conf": 0.35,
+            "device": "cpu",
+            "half": False,
+            "verbose": False,
+        }
+    ]
+    assert boxes.tensor_calls == [
+        "box.detach",
+        "box.cpu",
+        "box.numpy",
+        "class.detach",
+        "class.cpu",
+        "class.numpy",
+        "score.detach",
+        "score.cpu",
+        "score.numpy",
+    ]
+    assert predictions == [
+        [
+            BoxPrediction(
+                class_id=3,
+                score=0.8,
+                polygon=((10.0, 20.0), (30.0, 20.0), (30.0, 40.0), (10.0, 40.0)),
+            )
+        ]
+    ]
+
+
 def test_extract_predictions_requires_requested_result_type() -> None:
     from xh_detect.detector import _extract_predictions
 
-    result = FakeResult(obb=None, boxes=None)
+    result = FakeHbbResult(boxes=None)
 
     with pytest.raises(ValueError, match="missing HBB boxes"):
         _extract_predictions(result, result_index=0, task="detect")
