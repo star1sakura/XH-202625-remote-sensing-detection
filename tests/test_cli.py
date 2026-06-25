@@ -1,6 +1,7 @@
 import json
 from importlib import metadata, reload
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -85,6 +86,43 @@ def test_prepare_dota_command_rejects_incomplete_source_layout(tmp_path: Path) -
 
     assert result.exit_code != 0
     assert "missing directories" in result.output
+
+
+@patch("xh_detect.cli.prepare_dataset")
+def test_prepare_xh25_command_reports_output(
+    prepare_dataset_mock: Mock,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "data"
+    source.mkdir()
+    output = tmp_path / "xh25"
+    prepare_dataset_mock.return_value = SimpleNamespace(
+        output_root=output,
+        train_stems=frozenset({"a", "b"}),
+        val_stems=frozenset({"c"}),
+        train_class_counts={class_id: 1 for class_id in range(25)},
+        val_class_counts={class_id: 1 for class_id in range(25)},
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "prepare-xh25",
+            "--source-root",
+            str(source),
+            "--output-root",
+            str(output),
+            "--val-ratio",
+            "0.15",
+            "--seed",
+            "42",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["train_images"] == 2
+    assert json.loads(result.stdout)["val_images"] == 1
+    prepare_dataset_mock.assert_called_once_with(source, output, val_ratio=0.15, seed=42)
 
 
 @patch("xh_detect.cli.train_model")

@@ -1,0 +1,37 @@
+task: detect
+taxonomy: xh25
+model_path: runs/train/xh25-baseline/weights/best.pt
+device: "0"
+image_size: 1024
+tile_size: 1024
+overlap: 0.2
+batch_size: 8
+merge_iou: 0.3
+edge_margin: 16
+half: true
+class_thresholds:
+  0: 0.25
+  1: 0.25
+  2: 0.25
+  3: 0.25
+  4: 0.25
+  5: 0.25
+  6: 0.25
+  7: 0.25
+  8: 0.25
+  9: 0.25
+  10: 0.25
+  11: 0.25
+  12: 0.25
+  13: 0.25
+  14: 0.25
+  15: 0.25
+  16: 0.25
+  17: 0.25
+  18: 0.25
+  19: 0.25
+  20: 0.25
+  21: 0.25
+  22: 0.25
+  23: 0.25
+  24: 0.25

@@ -14,6 +14,7 @@ import ultralytics
 from xh_detect import __version__
 from xh_detect.config import PipelineConfig
 from xh_detect.data.dota import ConversionStats, convert_split, write_dataset_yaml
+from xh_detect.data.xh25 import prepare_dataset
 from xh_detect.detector import UltralyticsOBBDetector
 from xh_detect.evaluator import (
     evaluate as evaluate_detections,
@@ -120,6 +121,28 @@ def prepare_dota(
                 "train": _stats_payload(train_stats),
                 "val": _stats_payload(val_stats),
                 "dataset_yaml": str(dataset_yaml),
+            },
+            ensure_ascii=False,
+        )
+    )
+
+
+@app.command("prepare-xh25")
+def prepare_xh25(
+    source_root: Annotated[Path, typer.Option(exists=True, file_okay=False)],
+    output_root: Annotated[Path, typer.Option()] = Path("datasets/xh25"),
+    val_ratio: Annotated[float, typer.Option(min=0.05, max=0.4)] = 0.15,
+    seed: Annotated[int, typer.Option(min=0)] = 42,
+) -> None:
+    prepared = prepare_dataset(source_root, output_root, val_ratio=val_ratio, seed=seed)
+    typer.echo(
+        json.dumps(
+            {
+                "output_root": str(prepared.output_root),
+                "train_images": len(prepared.train_stems),
+                "val_images": len(prepared.val_stems),
+                "train_targets": dict(prepared.train_class_counts),
+                "val_targets": dict(prepared.val_class_counts),
             },
             ensure_ascii=False,
         )
