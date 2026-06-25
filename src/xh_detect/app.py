@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -35,10 +36,16 @@ def format_summary(
     timings: StageTimings,
     *,
     taxonomy: Taxonomy | None = None,
+    include_zero_fine_counts: bool = True,
 ) -> dict[str, object]:
     taxonomy = taxonomy or get_taxonomy("legacy3")
+    counts = class_counts(detections, taxonomy=taxonomy)
+    fine_counts = counts["fine"]
+    if not include_zero_fine_counts:
+        fine_counts = {name: count for name, count in fine_counts.items() if count > 0}
     return {
-        **class_counts(detections, taxonomy=taxonomy),
+        "coarse_counts": counts["coarse"],
+        "fine_counts": fine_counts,
         "preprocess_seconds": round(timings.preprocess_s, 4),
         "inference_seconds": round(timings.inference_s, 4),
         "postprocess_seconds": round(timings.postprocess_s, 4),
@@ -63,6 +70,7 @@ def run_prediction(
     *,
     taxonomy: Taxonomy | None = None,
     output_root: Path = Path("outputs/gradio"),
+    include_zero_fine_counts: bool = True,
     progress: ProgressCallback | None = None,
 ) -> tuple[str, dict[str, object], str]:
     if not isinstance(image_path, str) or not image_path:
@@ -101,7 +109,12 @@ def run_prediction(
         valid_class_ids=taxonomy.valid_ids,
     )
 
-    summary = format_summary(result.detections, result.timings, taxonomy=taxonomy)
+    summary = format_summary(
+        result.detections,
+        result.timings,
+        taxonomy=taxonomy,
+        include_zero_fine_counts=include_zero_fine_counts,
+    )
     if truth_path:
         report = evaluate(
             load_coco_predictions(json_output, taxonomy=taxonomy),
@@ -112,6 +125,29 @@ def run_prediction(
 
     _progress(progress, 1.0, "完成")
     return str(image_output), summary, str(json_output)
+
+
+def _load_xh25_demo_examples(
+    manifest_path: Path = Path("datasets/xh25/manifests/demo-samples.json"),
+) -> list[list[str]] | None:
+    if not manifest_path.is_file():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(manifest, dict):
+        return None
+
+    dataset_root = manifest_path.parents[1]
+    examples: list[list[str]] = []
+    for coarse_name in sorted(manifest):
+        relative_path = manifest[coarse_name]
+        if not isinstance(relative_path, str) or not relative_path:
+            continue
+        sample_path = dataset_root / relative_path
+        examples.append([sample_path.as_posix()])
+    return examples or None
 
 
 def build_app(config_path: Path = Path("configs/baseline.yaml")) -> gr.Blocks:
@@ -125,8 +161,13 @@ def build_app(config_path: Path = Path("configs/baseline.yaml")) -> gr.Blocks:
         task=config.task,
     )
     pipeline = InferencePipeline(detector, config, Path("cache/gradio"))
+    is_official_hbb = config.task == "detect"
+    page_title = (
+        "XH-202625 正式数据 25 类 HBB Demo" if is_official_hbb else "XH-202625 遥感目标检测 Demo"
+    )
+    demo_examples = _load_xh25_demo_examples() if is_official_hbb else None
 
-    def handle_prediction(
+    def handle_obb_prediction(
         image_path: str,
         mode: str,
         truth_path: str | None,
@@ -144,13 +185,39 @@ def build_app(config_path: Path = Path("configs/baseline.yaml")) -> gr.Blocks:
         except (OSError, TypeError, ValueError) as exc:
             raise gr.Error(str(exc)) from exc
 
-    with gr.Blocks(title="XH-202625 遥感目标检测 Demo") as demo:
-        gr.Markdown("# XH-202625 遥感目标检测 Demo")
-        gr.Markdown("上传单幅光学遥感图像，输出飞机、舰船和车辆检测结果。")
+    def handle_hbb_prediction(
+        image_path: str,
+        truth_path: str | None,
+        progress: ProgressCallback = _GRADIO_PROGRESS,
+    ) -> tuple[str, dict[str, object], str]:
+        try:
+            return run_prediction(
+                pipeline,
+                image_path,
+                "HBB",
+                truth_path,
+                taxonomy=taxonomy,
+                include_zero_fine_counts=False,
+                progress=progress,
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            raise gr.Error(str(exc)) from exc
+
+    with gr.Blocks(title=page_title) as demo:
+        gr.Markdown(f"# {page_title}")
+        gr.Markdown(
+            "上传单幅光学遥感图像，输出正式数据集 25 类水平框检测结果。"
+            if is_official_hbb
+            else "上传单幅光学遥感图像，输出飞机、舰船和车辆检测结果。"
+        )
         with gr.Row():
             source = gr.Image(type="filepath", label="上传光学遥感图像")
             result_image = gr.Image(type="filepath", label="检测结果")
-        mode = gr.Radio(["OBB", "HBB"], value="OBB", label="显示框类型")
+        if is_official_hbb and demo_examples is not None:
+            gr.Examples(examples=demo_examples, inputs=[source])
+        mode = None
+        if not is_official_hbb:
+            mode = gr.Radio(["OBB", "HBB"], value="OBB", label="显示框类型")
         truth_file = gr.File(
             type="filepath",
             label="可选：COCO 真值 JSON（当前图像使用 image_id=1）",
@@ -158,9 +225,16 @@ def build_app(config_path: Path = Path("configs/baseline.yaml")) -> gr.Blocks:
         run_button = gr.Button("开始检测", variant="primary")
         summary = gr.JSON(label="目标数量、耗时与评估")
         result_file = gr.File(label="COCO Detection JSON")
-        run_button.click(
-            handle_prediction,
-            inputs=[source, mode, truth_file],
-            outputs=[result_image, summary, result_file],
-        )
+        if is_official_hbb:
+            run_button.click(
+                handle_hbb_prediction,
+                inputs=[source, truth_file],
+                outputs=[result_image, summary, result_file],
+            )
+        else:
+            run_button.click(
+                handle_obb_prediction,
+                inputs=[source, mode, truth_file],
+                outputs=[result_image, summary, result_file],
+            )
     return demo.queue(default_concurrency_limit=1)
