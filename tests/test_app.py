@@ -28,9 +28,8 @@ def test_format_summary_contains_counts_and_timings() -> None:
     )
 
     assert summary == {
-        "aircraft": 0,
-        "ship": 0,
-        "vehicle": 1,
+        "coarse": {"aircraft": 0, "ship": 0, "vehicle": 1},
+        "fine": {"aircraft": 0, "ship": 0, "vehicle": 1},
         "preprocess_seconds": 0.1,
         "inference_seconds": 0.2,
         "postprocess_seconds": 0.3,
@@ -64,7 +63,7 @@ def test_run_prediction_uses_shared_pipeline_and_writes_outputs(tmp_path: Path) 
     assert called_image_id == "scene"
     assert Path(image_output).is_file()
     assert Path(json_output).is_file()
-    assert summary["vehicle"] == 1
+    assert summary["coarse"]["vehicle"] == 1
     assert progress.call_count == 4
 
 
