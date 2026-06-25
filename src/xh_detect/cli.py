@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import platform
+from collections.abc import Mapping
 from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated
@@ -15,7 +16,7 @@ from xh_detect import __version__
 from xh_detect.config import PipelineConfig
 from xh_detect.data.dota import ConversionStats, convert_split, write_dataset_yaml
 from xh_detect.data.xh25 import prepare_dataset
-from xh_detect.detector import UltralyticsOBBDetector
+from xh_detect.detector import UltralyticsDetector
 from xh_detect.evaluator import (
     evaluate as evaluate_detections,
 )
@@ -27,6 +28,7 @@ from xh_detect.evaluator import (
 )
 from xh_detect.exporters import export_coco_results
 from xh_detect.pipeline import InferencePipeline
+from xh_detect.taxonomy import get_taxonomy
 from xh_detect.training import export_tensorrt, train_model
 from xh_detect.visualize import draw_detections
 
@@ -81,6 +83,16 @@ def benchmark_pipeline(
     from xh_detect.benchmark import benchmark_pipeline as run_benchmark
 
     return run_benchmark(pipeline, image, image_id, repeats)
+
+
+def _build_detector(config: PipelineConfig) -> UltralyticsDetector:
+    return UltralyticsDetector(
+        config.model_path,
+        config.device,
+        config.image_size,
+        config.half,
+        task=config.task,
+    )
 
 
 @app.command("prepare-dota")
@@ -180,23 +192,80 @@ def infer(
     if image is None:
         raise typer.BadParameter(f"cannot read image: {image_path}")
 
-    detector = UltralyticsOBBDetector(
-        config.model_path,
-        config.device,
-        config.image_size,
-        config.half,
-    )
+    detector = _build_detector(config)
     pipeline = InferencePipeline(detector, config, output_dir / "cache")
     result = pipeline.run(image, image_path.stem)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     image_output = output_dir / f"{image_path.stem}.jpg"
     json_output = output_dir / f"{image_path.stem}.json"
-    rendered = draw_detections(image, result.detections)
+    taxonomy = get_taxonomy(config.taxonomy)
+    rendered = draw_detections(image, result.detections, taxonomy=taxonomy)
     if not cv2.imwrite(str(image_output), rendered):
         raise RuntimeError(f"failed to write rendered image: {image_output}")
-    export_coco_results(result.detections, {image_path.stem: 1}, json_output)
+    export_coco_results(
+        result.detections,
+        {image_path.stem: 1},
+        json_output,
+        valid_class_ids=taxonomy.valid_ids,
+    )
     typer.echo(json.dumps(asdict(result.timings), allow_nan=False))
+
+
+def _load_image_id_map(path: Path) -> dict[str, int]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, Mapping):
+        raise typer.BadParameter("image map JSON must be a mapping")
+
+    image_map: dict[str, int] = {}
+    seen_ids: set[int] = set()
+    for key, value in payload.items():
+        if not isinstance(key, str) or not key.strip():
+            raise typer.BadParameter("image map keys must be non-empty strings")
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise typer.BadParameter("image map values must be non-bool non-negative integers")
+        if value < 0:
+            raise typer.BadParameter("image map values must be non-bool non-negative integers")
+        if value in seen_ids:
+            raise typer.BadParameter("image map values must be unique")
+        seen_ids.add(value)
+        image_map[key] = value
+    return image_map
+
+
+@app.command("infer-dataset")
+def infer_dataset(
+    images_dir: Annotated[Path, typer.Option(exists=True, file_okay=False)],
+    image_map_json: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    config_path: Annotated[Path, typer.Option(exists=True, dir_okay=False)] = Path(
+        "configs/xh25-hbb.yaml"
+    ),
+    output_json: Annotated[Path, typer.Option()] = Path("outputs/xh25/val-predictions.json"),
+) -> None:
+    image_map = _load_image_id_map(image_map_json)
+    config = PipelineConfig.from_yaml(config_path)
+    taxonomy = get_taxonomy(config.taxonomy)
+    detector = _build_detector(config)
+    pipeline = InferencePipeline(detector, config, output_json.parent / "cache")
+
+    all_detections = []
+    for stem in sorted(image_map):
+        image_path = images_dir / f"{stem}.jpg"
+        if not image_path.exists():
+            raise typer.BadParameter(f"missing image for stem {stem!r}: {image_path}")
+        image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+        if image is None:
+            raise typer.BadParameter(f"cannot read image: {image_path}")
+        result = pipeline.run(image, stem)
+        all_detections.extend(result.detections)
+
+    export_coco_results(
+        all_detections,
+        image_map,
+        output_json,
+        valid_class_ids=taxonomy.valid_ids,
+    )
+    typer.echo(str(output_json))
 
 
 @app.command("export-engine")
@@ -219,10 +288,12 @@ def evaluate_command(
         typer.Option(exists=True, dir_okay=False),
     ],
     output_path: Annotated[Path, typer.Option()] = Path("outputs/evaluation/report.json"),
+    taxonomy: Annotated[str, typer.Option()] = "legacy3",
 ) -> None:
-    predictions = load_coco_predictions(predictions_json)
-    truth = load_coco_ground_truth(ground_truth_json)
-    report = evaluate_detections(predictions, truth)
+    taxonomy_object = get_taxonomy(taxonomy)
+    predictions = load_coco_predictions(predictions_json, taxonomy=taxonomy_object)
+    truth = load_coco_ground_truth(ground_truth_json, taxonomy=taxonomy_object)
+    report = evaluate_detections(predictions, truth, taxonomy=taxonomy_object)
     payload = report_to_dict(report)
     _write_json(output_path, payload)
     typer.echo(json.dumps(payload, ensure_ascii=False, allow_nan=False))
@@ -239,13 +310,20 @@ def sweep_thresholds_command(
         typer.Option(exists=True, dir_okay=False),
     ],
     output_path: Annotated[Path, typer.Option()] = Path("outputs/evaluation/threshold-sweep.json"),
+    taxonomy: Annotated[str, typer.Option()] = "legacy3",
 ) -> None:
-    predictions = load_coco_predictions(predictions_json)
-    truth = load_coco_ground_truth(ground_truth_json)
+    taxonomy_object = get_taxonomy(taxonomy)
+    predictions = load_coco_predictions(predictions_json, taxonomy=taxonomy_object)
+    truth = load_coco_ground_truth(ground_truth_json, taxonomy=taxonomy_object)
     thresholds = [round(index * 0.05, 2) for index in range(1, 20)]
     payload = [
         {"threshold": threshold, "report": report_to_dict(report)}
-        for threshold, report in threshold_sweep(predictions, truth, thresholds)
+        for threshold, report in threshold_sweep(
+            predictions,
+            truth,
+            thresholds,
+            taxonomy=taxonomy_object,
+        )
     ]
     _write_json(output_path, payload)
     typer.echo(str(output_path))
@@ -278,12 +356,7 @@ def benchmark(
     if image is None:
         raise typer.BadParameter(f"cannot read benchmark image: {image_path}")
     config = PipelineConfig.from_yaml(config_path)
-    detector = UltralyticsOBBDetector(
-        config.model_path,
-        config.device,
-        config.image_size,
-        config.half,
-    )
+    detector = _build_detector(config)
     pipeline = InferencePipeline(detector, config, cache_root=None)
     summary = benchmark_pipeline(pipeline, image, image_path.stem, repeats)
     typer.echo(json.dumps(summary, allow_nan=False))
