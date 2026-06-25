@@ -45,20 +45,28 @@ def _validate_confidence(value: object) -> float:
     return confidence
 
 
-def _to_numpy_array(value: object, *, result_index: int, field_name: str) -> np.ndarray:
+def _to_numpy_array(
+    value: object,
+    *,
+    result_index: int,
+    field_name: str,
+    result_type: str = "OBB",
+) -> np.ndarray:
     try:
         return np.asarray(value)
     except Exception as exc:  # pragma: no cover - defensive conversion guard
-        raise ValueError(f"result {result_index} has invalid OBB {field_name} values") from exc
+        raise ValueError(
+            f"result {result_index} has invalid {result_type} {field_name} values"
+        ) from exc
 
 
-def _ensure_finite(array: np.ndarray, *, result_index: int) -> None:
+def _ensure_finite(array: np.ndarray, *, result_index: int, result_type: str = "OBB") -> None:
     try:
         is_finite = np.isfinite(array).all()
     except TypeError as exc:
-        raise ValueError(f"result {result_index} contains non-finite OBB values") from exc
+        raise ValueError(f"result {result_index} contains non-finite {result_type} values") from exc
     if not bool(is_finite):
-        raise ValueError(f"result {result_index} contains non-finite OBB values")
+        raise ValueError(f"result {result_index} contains non-finite {result_type} values")
 
 
 def _format_array_value(value: object) -> str:
@@ -72,10 +80,11 @@ def _validate_real_numeric_array(
     *,
     result_index: int,
     field_name: str,
+    result_type: str = "OBB",
 ) -> None:
     if array.dtype.kind not in {"i", "u", "f"}:
         raise ValueError(
-            f"result {result_index} has invalid OBB {field_name} values: "
+            f"result {result_index} has invalid {result_type} {field_name} values: "
             "expected a real non-boolean numeric array, "
             f"got dtype {array.dtype}"
         )
@@ -88,17 +97,23 @@ def _is_real_numeric_scalar(value: object) -> bool:
     )
 
 
-def _validate_class_ids(classes: np.ndarray, *, result_index: int) -> list[int]:
+def _validate_class_ids(
+    classes: np.ndarray,
+    *,
+    result_index: int,
+    result_type: str = "OBB",
+) -> list[int]:
     _validate_real_numeric_array(
         classes,
         result_index=result_index,
         field_name="class",
+        result_type=result_type,
     )
     validated: list[int] = []
     for box_index, class_id in enumerate(classes):
         if not _is_real_numeric_scalar(class_id):
             raise ValueError(
-                f"result {result_index} has invalid OBB class at box {box_index}: "
+                f"result {result_index} has invalid {result_type} class at box {box_index}: "
                 "expected a finite non-negative integer, got "
                 f"{_format_array_value(class_id)}"
             )
@@ -118,7 +133,7 @@ def _validate_class_ids(classes: np.ndarray, *, result_index: int) -> list[int]:
 
         if not is_valid:
             raise ValueError(
-                f"result {result_index} has invalid OBB class at box {box_index}: "
+                f"result {result_index} has invalid {result_type} class at box {box_index}: "
                 "expected a finite non-negative int64 integer, got "
                 f"{_format_array_value(class_id)}"
             )
@@ -126,17 +141,23 @@ def _validate_class_ids(classes: np.ndarray, *, result_index: int) -> list[int]:
     return validated
 
 
-def _validate_scores(scores: np.ndarray, *, result_index: int) -> list[float]:
+def _validate_scores(
+    scores: np.ndarray,
+    *,
+    result_index: int,
+    result_type: str = "OBB",
+) -> list[float]:
     _validate_real_numeric_array(
         scores,
         result_index=result_index,
         field_name="score",
+        result_type=result_type,
     )
     validated: list[float] = []
     for box_index, score in enumerate(scores):
         if not _is_real_numeric_scalar(score):
             raise ValueError(
-                f"result {result_index} has invalid OBB score at box {box_index}: "
+                f"result {result_index} has invalid {result_type} score at box {box_index}: "
                 "expected a finite real value in [0, 1], got "
                 f"{_format_array_value(score)}"
             )
@@ -144,7 +165,7 @@ def _validate_scores(scores: np.ndarray, *, result_index: int) -> list[float]:
         numeric_score = float(score)
         if not math.isfinite(numeric_score) or not 0.0 <= numeric_score <= 1.0:
             raise ValueError(
-                f"result {result_index} has invalid OBB score at box {box_index}: "
+                f"result {result_index} has invalid {result_type} score at box {box_index}: "
                 "expected a finite real value in [0, 1], got "
                 f"{_format_array_value(score)}"
             )
@@ -152,10 +173,10 @@ def _validate_scores(scores: np.ndarray, *, result_index: int) -> list[float]:
     return validated
 
 
-def _extract_predictions(result: object, *, result_index: int) -> list[BoxPrediction]:
+def _extract_obb_predictions(result: object, *, result_index: int) -> list[BoxPrediction]:
     obb = getattr(result, "obb", None)
     if obb is None:
-        return []
+        raise ValueError(f"result {result_index} is missing OBB predictions")
 
     polygons = _to_numpy_array(
         obb.xyxyxyxy.detach().cpu().numpy(),
@@ -209,6 +230,82 @@ def _extract_predictions(result: object, *, result_index: int) -> list[BoxPredic
     return predictions
 
 
+def _extract_hbb_predictions(result: object, *, result_index: int) -> list[BoxPrediction]:
+    boxes = getattr(result, "boxes", None)
+    if boxes is None:
+        raise ValueError(f"result {result_index} is missing HBB boxes")
+
+    coordinates = _to_numpy_array(
+        boxes.xyxy.detach().cpu().numpy(),
+        result_index=result_index,
+        field_name="box",
+        result_type="HBB",
+    )
+    classes = _to_numpy_array(
+        boxes.cls.detach().cpu().numpy(),
+        result_index=result_index,
+        field_name="class",
+        result_type="HBB",
+    ).reshape(-1)
+    scores = _to_numpy_array(
+        boxes.conf.detach().cpu().numpy(),
+        result_index=result_index,
+        field_name="score",
+        result_type="HBB",
+    ).reshape(-1)
+
+    if coordinates.ndim != 2 or coordinates.shape[1:] != (4,):
+        raise ValueError(
+            f"result {result_index} has invalid HBB shape: expected (N, 4), got {coordinates.shape}"
+        )
+
+    box_count = coordinates.shape[0]
+    if box_count != len(classes) or box_count != len(scores):
+        raise ValueError(
+            "result "
+            f"{result_index} has inconsistent HBB lengths: boxes={box_count}, "
+            f"classes={len(classes)}, scores={len(scores)}"
+        )
+
+    _ensure_finite(coordinates, result_index=result_index, result_type="HBB")
+    validated_classes = _validate_class_ids(
+        classes,
+        result_index=result_index,
+        result_type="HBB",
+    )
+    validated_scores = _validate_scores(scores, result_index=result_index, result_type="HBB")
+
+    predictions: list[BoxPrediction] = []
+    for coordinate, class_id, score in zip(
+        coordinates,
+        validated_classes,
+        validated_scores,
+        strict=True,
+    ):
+        xmin, ymin, xmax, ymax = (float(value) for value in coordinate)
+        predictions.append(
+            BoxPrediction(
+                class_id=class_id,
+                score=score,
+                polygon=((xmin, ymin), (xmax, ymin), (xmax, ymax), (xmin, ymax)),
+            )
+        )
+    return predictions
+
+
+def _extract_predictions(
+    result: object,
+    *,
+    result_index: int,
+    task: str = "obb",
+) -> list[BoxPrediction]:
+    if task == "detect":
+        return _extract_hbb_predictions(result, result_index=result_index)
+    if task == "obb":
+        return _extract_obb_predictions(result, result_index=result_index)
+    raise ValueError(f"unsupported task {task!r}; expected 'detect' or 'obb'")
+
+
 def _is_cuda_oom(error: RuntimeError) -> bool:
     if isinstance(error, torch.cuda.OutOfMemoryError):
         return True
@@ -223,18 +320,26 @@ def _empty_cuda_cache_if_available() -> None:
         empty_cache()
 
 
-class UltralyticsOBBDetector:
+def _validate_task(value: object) -> str:
+    if not isinstance(value, str) or value not in {"detect", "obb"}:
+        raise ValueError("task must be one of: detect, obb")
+    return value
+
+
+class UltralyticsDetector:
     def __init__(
         self,
         model_path: str,
         device: str,
         image_size: int,
         half: bool,
+        task: str,
     ) -> None:
         validated_model_path = _validate_non_empty_string(model_path, "model_path")
         self.device = _validate_non_empty_string(device, "device")
         self.image_size = _validate_positive_integer(image_size, "image_size")
         self.half = _validate_bool(half, "half")
+        self.task = _validate_task(task)
         self.model = YOLO(validated_model_path)
 
     def predict(self, images: list[ImageArray], confidence: float) -> list[list[BoxPrediction]]:
@@ -256,8 +361,20 @@ class UltralyticsOBBDetector:
                 f"Ultralytics returned {len(results)} results for {len(images)} input images"
             )
         return [
-            _extract_predictions(result, result_index=index) for index, result in enumerate(results)
+            _extract_predictions(result, result_index=index, task=self.task)
+            for index, result in enumerate(results)
         ]
+
+
+class UltralyticsOBBDetector(UltralyticsDetector):
+    def __init__(
+        self,
+        model_path: str,
+        device: str,
+        image_size: int,
+        half: bool,
+    ) -> None:
+        super().__init__(model_path, device, image_size, half, task="obb")
 
 
 def predict_with_oom_backoff(

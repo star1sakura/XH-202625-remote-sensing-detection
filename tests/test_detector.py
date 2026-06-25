@@ -102,9 +102,18 @@ class FakeObb:
         self.conf = FakeTensor(scores, "score", self.tensor_calls)
 
 
+class FakeBoxes:
+    def __init__(self, boxes: object, classes: object, scores: object) -> None:
+        self.tensor_calls: list[str] = []
+        self.xyxy = FakeTensor(boxes, "box", self.tensor_calls)
+        self.cls = FakeTensor(classes, "class", self.tensor_calls)
+        self.conf = FakeTensor(scores, "score", self.tensor_calls)
+
+
 class FakeResult:
-    def __init__(self, obb: FakeObb | None) -> None:
+    def __init__(self, obb: FakeObb | None, boxes: FakeBoxes | None = None) -> None:
         self.obb = obb
+        self.boxes = boxes
 
 
 class FakeModel:
@@ -166,6 +175,19 @@ def test_ultralytics_detector_requires_bool_half(half: object) -> None:
             device="cpu",
             image_size=640,
             half=half,  # type: ignore[arg-type]
+        )
+
+
+def test_ultralytics_detector_rejects_unknown_task() -> None:
+    from xh_detect import detector as detector_module
+
+    with pytest.raises(ValueError, match="task must be one of"):
+        detector_module.UltralyticsDetector(
+            model_path="weights.pt",
+            device="cpu",
+            image_size=640,
+            half=False,
+            task="segment",
         )
 
 
@@ -351,7 +373,15 @@ def test_ultralytics_detector_predict_passes_expected_kwargs_and_converts_boxes(
         classes=[0.0, 2],
         scores=[0.75, 0.5],
     )
-    fake_model = FakeModel([FakeResult(obb), FakeResult(None)])
+    obb_second = FakeObb(
+        polygons=[
+            [[1, 2], [5, 2], [5, 6], [1, 6]],
+            [[10.5, 20.25], [30.5, 20.25], [30.5, 40.75], [10.5, 40.75]],
+        ],
+        classes=[0.0, 2],
+        scores=[0.75, 0.5],
+    )
+    fake_model = FakeModel([FakeResult(obb), FakeResult(obb_second)])
     captured_paths: list[str] = []
 
     def fake_yolo(model_path: str) -> FakeModel:
@@ -403,7 +433,18 @@ def test_ultralytics_detector_predict_passes_expected_kwargs_and_converts_boxes(
                 polygon=((10.5, 20.25), (30.5, 20.25), (30.5, 40.75), (10.5, 40.75)),
             ),
         ],
-        [],
+        [
+            BoxPrediction(
+                class_id=0,
+                score=0.75,
+                polygon=((1.0, 2.0), (5.0, 2.0), (5.0, 6.0), (1.0, 6.0)),
+            ),
+            BoxPrediction(
+                class_id=2,
+                score=0.5,
+                polygon=((10.5, 20.25), (30.5, 20.25), (30.5, 40.75), (10.5, 40.75)),
+            ),
+        ],
     ]
 
 
@@ -418,6 +459,52 @@ def test_ultralytics_detector_empty_input_skips_model_predict(
 
     assert detector.predict([], confidence=0.25) == []
     assert fake_model.calls == []
+
+
+def test_extract_hbb_predictions_converts_xyxy_to_polygon() -> None:
+    from xh_detect.detector import _extract_predictions
+
+    boxes = FakeBoxes(boxes=[[10, 20, 30, 40]], classes=[24], scores=[0.9])
+    result = FakeResult(obb=None, boxes=boxes)
+
+    predictions = _extract_predictions(result, result_index=0, task="detect")
+
+    assert boxes.tensor_calls == [
+        "box.detach",
+        "box.cpu",
+        "box.numpy",
+        "class.detach",
+        "class.cpu",
+        "class.numpy",
+        "score.detach",
+        "score.cpu",
+        "score.numpy",
+    ]
+    assert predictions == [
+        BoxPrediction(
+            class_id=24,
+            score=0.9,
+            polygon=((10.0, 20.0), (30.0, 20.0), (30.0, 40.0), (10.0, 40.0)),
+        )
+    ]
+
+
+def test_extract_predictions_requires_requested_result_type() -> None:
+    from xh_detect.detector import _extract_predictions
+
+    result = FakeResult(obb=None, boxes=None)
+
+    with pytest.raises(ValueError, match="missing HBB boxes"):
+        _extract_predictions(result, result_index=0, task="detect")
+
+
+def test_extract_obb_predictions_requires_requested_result_type() -> None:
+    from xh_detect.detector import _extract_predictions
+
+    result = FakeResult(obb=None, boxes=None)
+
+    with pytest.raises(ValueError, match="missing OBB"):
+        _extract_predictions(result, result_index=0, task="obb")
 
 
 @pytest.mark.parametrize("class_id", [1.9, -1, math.nan, math.inf, -math.inf])
