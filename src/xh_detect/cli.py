@@ -250,6 +250,10 @@ def infer_dataset(
         image_path = images_dir / f"{stem}.jpg"
         if not image_path.is_file():
             raise typer.BadParameter(f"missing image for stem {stem!r}: {image_path}")
+        image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+        if image is None:
+            raise typer.BadParameter(f"cannot read image: {image_path}")
+        del image
 
     config = PipelineConfig.from_yaml(config_path)
     taxonomy = get_taxonomy(config.taxonomy)

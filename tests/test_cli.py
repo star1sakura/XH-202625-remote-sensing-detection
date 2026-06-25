@@ -505,6 +505,49 @@ def test_infer_dataset_preflights_mapped_images_before_model_load(tmp_path: Path
     build_detector.assert_not_called()
 
 
+def test_infer_dataset_preflights_unreadable_images_before_model_load(tmp_path: Path) -> None:
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    (images_dir / "corrupt.jpg").write_bytes(b"not a readable image")
+    image_map_json = tmp_path / "image-map.json"
+    image_map_json.write_text(json.dumps({"corrupt": 7}), encoding="utf-8")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("config", encoding="utf-8")
+    config = PipelineConfig(
+        task="detect",
+        taxonomy="xh25",
+        model_path="best.pt",
+        device="cpu",
+        half=False,
+        class_thresholds={class_id: 0.25 for class_id in range(25)},
+    )
+
+    with (
+        patch("xh_detect.cli.cv2.imread", return_value=None),
+        patch("xh_detect.cli.PipelineConfig.from_yaml", return_value=config),
+        patch("xh_detect.cli._build_detector", create=True) as build_detector,
+    ):
+        result = CliRunner().invoke(
+            app,
+            [
+                "infer-dataset",
+                "--images-dir",
+                str(images_dir),
+                "--image-map-json",
+                str(image_map_json),
+                "--config-path",
+                str(config_path),
+                "--output-json",
+                str(tmp_path / "predictions.json"),
+            ],
+        )
+
+    assert result.exit_code != 0
+    assert "cannot read image" in result.output
+    assert "corrupt.jpg" in result.output
+    build_detector.assert_not_called()
+
+
 def test_infer_dataset_runs_mapped_stems_in_sorted_order_and_ignores_extra_images(
     tmp_path: Path,
 ) -> None:
