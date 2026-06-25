@@ -13,7 +13,7 @@ os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 import gradio as gr
 
 from xh_detect.config import PipelineConfig
-from xh_detect.detector import UltralyticsOBBDetector
+from xh_detect.detector import UltralyticsDetector
 from xh_detect.evaluator import (
     evaluate,
     load_coco_ground_truth,
@@ -22,6 +22,7 @@ from xh_detect.evaluator import (
 )
 from xh_detect.exporters import export_coco_results
 from xh_detect.pipeline import InferencePipeline
+from xh_detect.taxonomy import Taxonomy, get_taxonomy
 from xh_detect.types import Detection, StageTimings
 from xh_detect.visualize import class_counts, draw_detections
 
@@ -32,9 +33,12 @@ _GRADIO_PROGRESS = gr.Progress()
 def format_summary(
     detections: list[Detection] | tuple[Detection, ...],
     timings: StageTimings,
+    *,
+    taxonomy: Taxonomy | None = None,
 ) -> dict[str, object]:
+    taxonomy = taxonomy or get_taxonomy("legacy3")
     return {
-        **class_counts(detections),
+        **class_counts(detections, taxonomy=taxonomy),
         "preprocess_seconds": round(timings.preprocess_s, 4),
         "inference_seconds": round(timings.inference_s, 4),
         "postprocess_seconds": round(timings.postprocess_s, 4),
@@ -57,6 +61,7 @@ def run_prediction(
     mode: str,
     truth_path: str | None,
     *,
+    taxonomy: Taxonomy | None = None,
     output_root: Path = Path("outputs/gradio"),
     progress: ProgressCallback | None = None,
 ) -> tuple[str, dict[str, object], str]:
@@ -65,6 +70,7 @@ def run_prediction(
     normalized_mode = mode.lower() if isinstance(mode, str) else ""
     if normalized_mode not in {"obb", "hbb"}:
         raise ValueError("mode must be OBB or HBB")
+    taxonomy = taxonomy or get_taxonomy("legacy3")
 
     _progress(progress, 0.0, "读取图像")
     image = cv2.imread(image_path, cv2.IMREAD_COLOR)
@@ -76,20 +82,31 @@ def run_prediction(
     result = pipeline.run(image, image_id)
 
     _progress(progress, 0.9, "生成可视化与 JSON")
-    rendered = draw_detections(image, result.detections, mode=normalized_mode)
+    rendered = draw_detections(
+        image,
+        result.detections,
+        mode=normalized_mode,
+        taxonomy=taxonomy,
+    )
     output_root.mkdir(parents=True, exist_ok=True)
     run_id = uuid4().hex[:12]
     image_output = output_root / f"{image_id}-{normalized_mode}-{run_id}.jpg"
     json_output = output_root / f"{image_id}-{run_id}.json"
     if not cv2.imwrite(str(image_output), rendered):
         raise OSError(f"failed to write rendered image: {image_output}")
-    export_coco_results(result.detections, {image_id: 1}, json_output)
+    export_coco_results(
+        result.detections,
+        {image_id: 1},
+        json_output,
+        valid_class_ids=taxonomy.valid_ids,
+    )
 
-    summary = format_summary(result.detections, result.timings)
+    summary = format_summary(result.detections, result.timings, taxonomy=taxonomy)
     if truth_path:
         report = evaluate(
-            load_coco_predictions(json_output),
-            load_coco_ground_truth(Path(truth_path)),
+            load_coco_predictions(json_output, taxonomy=taxonomy),
+            load_coco_ground_truth(Path(truth_path), taxonomy=taxonomy),
+            taxonomy=taxonomy,
         )
         summary["evaluation"] = report_to_dict(report)
 
@@ -99,11 +116,13 @@ def run_prediction(
 
 def build_app(config_path: Path = Path("configs/baseline.yaml")) -> gr.Blocks:
     config = PipelineConfig.from_yaml(config_path)
-    detector = UltralyticsOBBDetector(
+    taxonomy = get_taxonomy(config.taxonomy)
+    detector = UltralyticsDetector(
         config.model_path,
         config.device,
         config.image_size,
         config.half,
+        task=config.task,
     )
     pipeline = InferencePipeline(detector, config, Path("cache/gradio"))
 
@@ -119,6 +138,7 @@ def build_app(config_path: Path = Path("configs/baseline.yaml")) -> gr.Blocks:
                 image_path,
                 mode,
                 truth_path,
+                taxonomy=taxonomy,
                 progress=progress,
             )
         except (OSError, TypeError, ValueError) as exc:

@@ -5,10 +5,12 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import numpy as np
+import pytest
+import typer
 from typer.testing import CliRunner
 
 import xh_detect
-from xh_detect.cli import app
+from xh_detect.cli import _load_image_id_map, app
 from xh_detect.config import PipelineConfig
 from xh_detect.data.dota import ConversionStats
 from xh_detect.taxonomy import get_taxonomy
@@ -384,6 +386,28 @@ def test_infer_builds_detect_model_for_xh25(tmp_path: Path) -> None:
     detector_class.assert_called_once_with("best.pt", "cpu", 1024, False, task="detect")
 
 
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ("{not-json", "invalid image map JSON:"),
+        (json.dumps({"a": 1, "b": 1}), "image map values must be unique"),
+        (json.dumps({"a": -1}), "image map values must be non-bool non-negative integers"),
+        (json.dumps({"a": 1.2}), "image map values must be non-bool non-negative integers"),
+        (json.dumps({"a": True}), "image map values must be non-bool non-negative integers"),
+    ],
+)
+def test_load_image_id_map_rejects_invalid_payloads(
+    tmp_path: Path,
+    payload: str,
+    message: str,
+) -> None:
+    path = tmp_path / "image-map.json"
+    path.write_text(payload, encoding="utf-8")
+
+    with pytest.raises(typer.BadParameter, match=message):
+        _load_image_id_map(path)
+
+
 def test_infer_dataset_exports_stable_image_ids(tmp_path: Path) -> None:
     images_dir = tmp_path / "images"
     images_dir.mkdir()
@@ -438,6 +462,101 @@ def test_infer_dataset_exports_stable_image_ids(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert json.loads(output_json.read_text(encoding="utf-8")) == [
         {"image_id": 7, "category_id": 24, "bbox": [0.0, 0.0, 4.0, 4.0], "score": 0.9}
+    ]
+
+
+def test_infer_dataset_preflights_mapped_images_before_model_load(tmp_path: Path) -> None:
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    image_map_json = tmp_path / "image-map.json"
+    image_map_json.write_text(json.dumps({"missing": 7}), encoding="utf-8")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("config", encoding="utf-8")
+    config = PipelineConfig(
+        task="detect",
+        taxonomy="xh25",
+        model_path="best.pt",
+        device="cpu",
+        half=False,
+        class_thresholds={class_id: 0.25 for class_id in range(25)},
+    )
+
+    with (
+        patch("xh_detect.cli.PipelineConfig.from_yaml", return_value=config),
+        patch("xh_detect.cli._build_detector", create=True) as build_detector,
+    ):
+        result = CliRunner().invoke(
+            app,
+            [
+                "infer-dataset",
+                "--images-dir",
+                str(images_dir),
+                "--image-map-json",
+                str(image_map_json),
+                "--config-path",
+                str(config_path),
+                "--output-json",
+                str(tmp_path / "predictions.json"),
+            ],
+        )
+
+    assert result.exit_code != 0
+    assert "missing image for stem 'missing'" in result.output
+    build_detector.assert_not_called()
+
+
+def test_infer_dataset_runs_mapped_stems_in_sorted_order_and_ignores_extra_images(
+    tmp_path: Path,
+) -> None:
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    for stem in ["b", "a", "extra"]:
+        (images_dir / f"{stem}.jpg").write_bytes(b"image")
+    image_map_json = tmp_path / "image-map.json"
+    image_map_json.write_text(json.dumps({"b": 2, "a": 1}), encoding="utf-8")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("config", encoding="utf-8")
+    output_json = tmp_path / "predictions.json"
+    image = np.zeros((8, 8, 3), dtype=np.uint8)
+    config = PipelineConfig(
+        task="detect",
+        taxonomy="xh25",
+        model_path="best.pt",
+        device="cpu",
+        half=False,
+        class_thresholds={class_id: 0.25 for class_id in range(25)},
+    )
+
+    with (
+        patch("xh_detect.cli.cv2.imread", return_value=image),
+        patch("xh_detect.cli.PipelineConfig.from_yaml", return_value=config),
+        patch("xh_detect.cli._build_detector", create=True),
+        patch("xh_detect.cli.InferencePipeline") as pipeline_class,
+    ):
+        pipeline_class.return_value.run.return_value = InferenceResult(
+            detections=(),
+            timings=StageTimings(0.1, 0.2, 0.3, 0.6),
+        )
+
+        result = CliRunner().invoke(
+            app,
+            [
+                "infer-dataset",
+                "--images-dir",
+                str(images_dir),
+                "--image-map-json",
+                str(image_map_json),
+                "--config-path",
+                str(config_path),
+                "--output-json",
+                str(output_json),
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert [call.args[1] for call in pipeline_class.return_value.run.call_args_list] == [
+        "a",
+        "b",
     ]
 
 

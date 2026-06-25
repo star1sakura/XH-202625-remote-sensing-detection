@@ -213,7 +213,10 @@ def infer(
 
 
 def _load_image_id_map(path: Path) -> dict[str, int]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise typer.BadParameter(f"invalid image map JSON: {exc.msg}") from exc
     if not isinstance(payload, Mapping):
         raise typer.BadParameter("image map JSON must be a mapping")
 
@@ -243,6 +246,11 @@ def infer_dataset(
     output_json: Annotated[Path, typer.Option()] = Path("outputs/xh25/val-predictions.json"),
 ) -> None:
     image_map = _load_image_id_map(image_map_json)
+    for stem in sorted(image_map):
+        image_path = images_dir / f"{stem}.jpg"
+        if not image_path.is_file():
+            raise typer.BadParameter(f"missing image for stem {stem!r}: {image_path}")
+
     config = PipelineConfig.from_yaml(config_path)
     taxonomy = get_taxonomy(config.taxonomy)
     detector = _build_detector(config)
@@ -251,8 +259,6 @@ def infer_dataset(
     all_detections = []
     for stem in sorted(image_map):
         image_path = images_dir / f"{stem}.jpg"
-        if not image_path.exists():
-            raise typer.BadParameter(f"missing image for stem {stem!r}: {image_path}")
         image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
         if image is None:
             raise typer.BadParameter(f"cannot read image: {image_path}")
