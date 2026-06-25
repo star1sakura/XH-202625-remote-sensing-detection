@@ -36,6 +36,7 @@ def format_summary(
     timings: StageTimings,
     *,
     taxonomy: Taxonomy | None = None,
+    official_counts: bool = False,
     include_zero_fine_counts: bool = True,
 ) -> dict[str, object]:
     taxonomy = taxonomy or get_taxonomy("legacy3")
@@ -43,13 +44,22 @@ def format_summary(
     fine_counts = counts["fine"]
     if not include_zero_fine_counts:
         fine_counts = {name: count for name, count in fine_counts.items() if count > 0}
-    return {
-        "coarse_counts": counts["coarse"],
-        "fine_counts": fine_counts,
+    summary = {
         "preprocess_seconds": round(timings.preprocess_s, 4),
         "inference_seconds": round(timings.inference_s, 4),
         "postprocess_seconds": round(timings.postprocess_s, 4),
         "total_seconds": round(timings.total_s, 4),
+    }
+    if official_counts:
+        return {
+            "coarse_counts": counts["coarse"],
+            "fine_counts": fine_counts,
+            **summary,
+        }
+    return {
+        "coarse": counts["coarse"],
+        "fine": fine_counts,
+        **summary,
     }
 
 
@@ -70,6 +80,7 @@ def run_prediction(
     *,
     taxonomy: Taxonomy | None = None,
     output_root: Path = Path("outputs/gradio"),
+    official_counts: bool = False,
     include_zero_fine_counts: bool = True,
     progress: ProgressCallback | None = None,
 ) -> tuple[str, dict[str, object], str]:
@@ -113,6 +124,7 @@ def run_prediction(
         result.detections,
         result.timings,
         taxonomy=taxonomy,
+        official_counts=official_counts,
         include_zero_fine_counts=include_zero_fine_counts,
     )
     if truth_path:
@@ -197,6 +209,7 @@ def build_app(config_path: Path = Path("configs/baseline.yaml")) -> gr.Blocks:
                 "HBB",
                 truth_path,
                 taxonomy=taxonomy,
+                official_counts=True,
                 include_zero_fine_counts=False,
                 progress=progress,
             )

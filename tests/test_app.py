@@ -31,8 +31,8 @@ def test_format_summary_contains_counts_and_timings() -> None:
     )
 
     assert summary == {
-        "coarse_counts": {"aircraft": 0, "ship": 0, "vehicle": 1},
-        "fine_counts": {"aircraft": 0, "ship": 0, "vehicle": 1},
+        "coarse": {"aircraft": 0, "ship": 0, "vehicle": 1},
+        "fine": {"aircraft": 0, "ship": 0, "vehicle": 1},
         "preprocess_seconds": 0.1,
         "inference_seconds": 0.2,
         "postprocess_seconds": 0.3,
@@ -49,6 +49,7 @@ def test_format_summary_contains_coarse_and_fine_counts() -> None:
         ],
         StageTimings(0.1, 0.2, 0.3, 0.6),
         taxonomy=get_taxonomy("xh25"),
+        official_counts=True,
     )
 
     assert summary["coarse_counts"] == {"aircraft": 1, "ship": 1, "vehicle": 1}
@@ -83,7 +84,7 @@ def test_run_prediction_uses_shared_pipeline_and_writes_outputs(tmp_path: Path) 
     assert called_image_id == "scene"
     assert Path(image_output).is_file()
     assert Path(json_output).is_file()
-    assert summary["coarse_counts"]["vehicle"] == 1
+    assert summary["coarse"]["vehicle"] == 1
     assert progress.call_count == 4
 
 
@@ -122,6 +123,35 @@ def test_build_app_constructs_detect_detector_for_xh25_without_real_model(
         for component in _components(demo)
     )
     assert not any(isinstance(component, gr.Radio) for component in _components(demo))
+
+
+def test_build_app_retains_mode_radio_for_legacy_obb_without_real_model(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("config", encoding="utf-8")
+    config = PipelineConfig(
+        task="obb",
+        taxonomy="legacy3",
+        model_path="best.pt",
+        device="cpu",
+        half=False,
+        class_thresholds={class_id: 0.25 for class_id in range(3)},
+    )
+
+    with (
+        patch("xh_detect.app.PipelineConfig.from_yaml", return_value=config),
+        patch("xh_detect.app.UltralyticsDetector", create=True) as detector_class,
+        patch("xh_detect.app.InferencePipeline") as pipeline_class,
+    ):
+        demo = build_app(config_path)
+
+    radios = [component for component in _components(demo) if isinstance(component, gr.Radio)]
+    assert len(radios) == 1
+    assert radios[0].choices == [("OBB", "OBB"), ("HBB", "HBB")]
+    assert radios[0].value == "OBB"
+    detector_class.assert_called_once_with("best.pt", "cpu", 1024, False, task="obb")
+    pipeline_class.assert_called_once()
 
 
 def test_build_app_loads_xh25_demo_examples_when_manifest_exists(
@@ -202,6 +232,7 @@ def test_run_prediction_passes_taxonomy_to_summary_export_and_evaluation(
         "HBB",
         str(truth_path),
         taxonomy=taxonomy,
+        official_counts=True,
         output_root=tmp_path / "outputs",
     )
 
