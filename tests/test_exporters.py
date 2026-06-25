@@ -37,6 +37,15 @@ def test_validate_coco_results_accepts_strict_records() -> None:
     validate_coco_results(records)
 
 
+def test_coco_validation_accepts_xh25_boundary_ids() -> None:
+    records = [
+        {"image_id": 1, "category_id": 0, "bbox": [1.0, 2.0, 3.0, 4.0], "score": 0.9},
+        {"image_id": 1, "category_id": 24, "bbox": [5.0, 6.0, 7.0, 8.0], "score": 0.8},
+    ]
+
+    validate_coco_results(records, valid_class_ids=frozenset(range(25)))
+
+
 @pytest.mark.parametrize(
     ("record", "match"),
     [

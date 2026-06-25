@@ -122,7 +122,7 @@ def test_inference_pipeline_merges_cross_tile_duplicates_in_stable_order() -> No
     ]
 
 
-def test_inference_pipeline_filters_by_per_class_thresholds_and_unknown_classes() -> None:
+def test_inference_pipeline_filters_by_per_class_thresholds() -> None:
     from xh_detect.pipeline import InferencePipeline
 
     config = PipelineConfig(
@@ -138,7 +138,6 @@ def test_inference_pipeline_filters_by_per_class_thresholds_and_unknown_classes(
                 _prediction(class_id=0, score=0.39),
                 _prediction(class_id=1, score=0.6),
                 _prediction(class_id=2, score=0.79),
-                _prediction(class_id=99, score=0.99),
             ]
         ]
     )
@@ -148,6 +147,47 @@ def test_inference_pipeline_filters_by_per_class_thresholds_and_unknown_classes(
 
     assert [(item.class_id, item.score) for item in result.detections] == [(1, 0.6)]
     assert detector.calls[0]["confidence"] == 0.4
+
+
+def test_inference_pipeline_rejects_detector_class_outside_taxonomy() -> None:
+    from xh_detect.pipeline import InferencePipeline
+
+    config = PipelineConfig(
+        tile_size=4,
+        overlap=0.0,
+        batch_size=4,
+        edge_margin=0,
+        class_thresholds={0: 0.4, 1: 0.6, 2: 0.8},
+    )
+    detector = RecordingDetector([[_prediction(class_id=24, score=0.99)]])
+    pipeline = InferencePipeline(detector=detector, config=config)
+
+    with pytest.raises(ValueError, match="class_id"):
+        pipeline.run(np.zeros((4, 4, 3), dtype=np.uint8), "threshold-scene")
+
+
+def test_pipeline_accepts_class_24_when_configured_for_xh25() -> None:
+    from xh_detect.pipeline import InferencePipeline
+
+    config = PipelineConfig(
+        task="detect",
+        taxonomy="xh25",
+        device="cpu",
+        half=False,
+        tile_size=64,
+        overlap=0.0,
+        edge_margin=0,
+        class_thresholds={class_id: 0.25 for class_id in range(25)},
+    )
+    pipeline = InferencePipeline(
+        RecordingDetector([[_prediction(class_id=24, score=0.9)]]),
+        config,
+        cache_root=None,
+    )
+
+    result = pipeline.run(np.zeros((64, 64, 3), dtype=np.uint8), "vehicle")
+
+    assert result.detections[0].class_id == 24
 
 
 def test_inference_pipeline_second_run_hits_cache_without_detector_call(

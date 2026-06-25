@@ -97,7 +97,10 @@ def _validate_detection_polygon(detection: Detection, index: int) -> Polygon4:
     return cast(Polygon4, tuple(validated_points))
 
 
-def validate_coco_results(records: list[dict[str, object]]) -> None:
+def validate_coco_results(
+    records: list[dict[str, object]],
+    valid_class_ids: frozenset[int] = frozenset({0, 1, 2}),
+) -> None:
     if not isinstance(records, list):
         raise TypeError("records must be a list of COCO detection records")
 
@@ -128,8 +131,8 @@ def validate_coco_results(records: list[dict[str, object]]) -> None:
         if not _is_non_bool_integral(category_id):
             raise TypeError(f"record {index} field category_id must be a non-bool integer")
         category_id_int = int(category_id)
-        if category_id_int not in {0, 1, 2}:
-            raise ValueError("category_id must be one of 0, 1, or 2")
+        if category_id_int not in valid_class_ids:
+            raise ValueError(f"category_id must be one of {sorted(valid_class_ids)}")
 
         bbox = record["bbox"]
         if type(bbox) is not list:
@@ -211,6 +214,7 @@ def export_coco_results(
     detections: Iterable[Detection],
     image_id_map: Mapping[str, int],
     destination: Path,
+    valid_class_ids: frozenset[int] = frozenset({0, 1, 2}),
 ) -> Path:
     if not isinstance(destination, Path):
         destination = Path(destination)
@@ -225,6 +229,6 @@ def export_coco_results(
         polygon = _validate_detection_polygon(detection, index)
         records.append(_build_record(detection, image_id, polygon))
 
-    validate_coco_results(records)
+    validate_coco_results(records, valid_class_ids=valid_class_ids)
     _write_json_atomic(destination, records)
     return destination

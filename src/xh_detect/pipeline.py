@@ -84,9 +84,15 @@ def _filter_predictions(
     predictions: list[BoxPrediction],
     *,
     class_thresholds: dict[int, float],
+    valid_class_ids: frozenset[int],
 ) -> list[BoxPrediction]:
     filtered: list[BoxPrediction] = []
     for prediction in predictions:
+        if prediction.class_id not in valid_class_ids:
+            raise ValueError(
+                f"detector returned class_id {prediction.class_id}; "
+                f"expected one of {sorted(valid_class_ids)}"
+            )
         threshold = class_thresholds.get(prediction.class_id)
         if threshold is None or prediction.score < threshold:
             continue
@@ -104,6 +110,7 @@ class InferencePipeline:
         self.detector = detector
         self.config = config
         self._class_thresholds = dict(config.class_thresholds)
+        self._valid_class_ids = config.valid_class_ids
         self._confidence = min(self._class_thresholds.values())
         self.cache = (
             TilePredictionCache(Path(cache_root) / _cache_namespace(config))
@@ -153,7 +160,11 @@ class InferencePipeline:
                 initial_batch_size=self.config.batch_size,
             )
             missing_predictions = [
-                _filter_predictions(predictions, class_thresholds=self._class_thresholds)
+                _filter_predictions(
+                    predictions,
+                    class_thresholds=self._class_thresholds,
+                    valid_class_ids=self._valid_class_ids,
+                )
                 for predictions in raw_predictions
             ]
         inference_s = time.perf_counter() - inference_start
