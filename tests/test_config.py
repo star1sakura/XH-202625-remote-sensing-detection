@@ -8,6 +8,8 @@ from xh_detect.config import PipelineConfig
 def test_pipeline_config_defaults_match_expected_values() -> None:
     config = PipelineConfig()
 
+    assert config.task == "obb"
+    assert config.taxonomy == "legacy3"
     assert config.model_path == "yolo26s-obb.pt"
     assert config.device == "0"
     assert config.tile_size == 1024
@@ -18,6 +20,7 @@ def test_pipeline_config_defaults_match_expected_values() -> None:
     assert config.edge_margin == 16
     assert config.half is True
     assert config.class_thresholds == {0: 0.25, 1: 0.25, 2: 0.25}
+    assert config.valid_class_ids == frozenset({0, 1, 2})
 
 
 def test_class_thresholds_are_immutable_and_copy_on_construct() -> None:
@@ -37,6 +40,8 @@ def test_pipeline_config_to_dict_returns_serializable_primitives() -> None:
     config = PipelineConfig()
 
     assert config.to_dict() == {
+        "task": "obb",
+        "taxonomy": "legacy3",
         "model_path": "yolo26s-obb.pt",
         "device": "0",
         "image_size": 1024,
@@ -58,10 +63,51 @@ def test_baseline_yaml_loads_expected_pipeline_values(
 
     config = PipelineConfig.from_yaml(baseline_path)
 
+    assert config.task == "obb"
+    assert config.taxonomy == "legacy3"
     assert config.model_path == "yolo26s-obb.pt"
     assert config.tile_size == 1024
     assert config.batch_size == 8
     assert config.class_thresholds == {0: 0.25, 1: 0.25, 2: 0.25}
+    assert config.valid_class_ids == frozenset({0, 1, 2})
+
+
+def test_xh25_detect_config_accepts_all_25_thresholds() -> None:
+    config = PipelineConfig(
+        task="detect",
+        taxonomy="xh25",
+        model_path="best.pt",
+        class_thresholds={class_id: 0.25 for class_id in range(25)},
+    )
+
+    assert config.task == "detect"
+    assert config.taxonomy == "xh25"
+    assert config.valid_class_ids == frozenset(range(25))
+
+
+def test_config_rejects_threshold_ids_not_matching_taxonomy() -> None:
+    with pytest.raises(ValueError, match="class_thresholds"):
+        PipelineConfig(
+            task="detect",
+            taxonomy="xh25",
+            class_thresholds={0: 0.25, 1: 0.25, 2: 0.25},
+        )
+
+
+def test_config_rejects_unknown_task() -> None:
+    with pytest.raises(ValueError, match="task"):
+        PipelineConfig(task="segment")  # type: ignore[arg-type]
+
+
+def test_xh25_hbb_yaml_loads_detect_task_and_taxonomy() -> None:
+    config_path = Path(__file__).resolve().parents[1] / "configs" / "xh25-hbb.yaml"
+
+    config = PipelineConfig.from_yaml(config_path)
+
+    assert config.task == "detect"
+    assert config.taxonomy == "xh25"
+    assert config.valid_class_ids == frozenset(range(25))
+    assert config.class_thresholds == {class_id: 0.25 for class_id in range(25)}
 
 
 def test_overlap_one_raises_value_error() -> None:

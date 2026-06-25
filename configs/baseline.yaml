@@ -1,3 +1,5 @@
+task: obb
+taxonomy: legacy3
 model_path: yolo26s-obb.pt
 device: "0"
 image_size: 1024

@@ -5,6 +5,8 @@ from types import MappingProxyType
 
 import yaml
 
+from xh_detect.taxonomy import get_taxonomy
+
 
 def _default_class_thresholds() -> dict[int, float]:
     return {0: 0.25, 1: 0.25, 2: 0.25}
@@ -12,6 +14,8 @@ def _default_class_thresholds() -> dict[int, float]:
 
 @dataclass(frozen=True)
 class PipelineConfig:
+    task: str = "obb"
+    taxonomy: str = "legacy3"
     model_path: str = "yolo26s-obb.pt"
     device: str = "0"
     image_size: int = 1024
@@ -25,7 +29,10 @@ class PipelineConfig:
 
     def __post_init__(self) -> None:
         class_thresholds = dict(self.class_thresholds)
+        taxonomy = get_taxonomy(self.taxonomy)
 
+        if self.task not in {"detect", "obb"}:
+            raise ValueError("task must be detect or obb")
         if self.image_size <= 0:
             raise ValueError("image_size must be positive")
         if self.tile_size <= 0:
@@ -38,15 +45,21 @@ class PipelineConfig:
             raise ValueError("merge_iou must be in [0, 1]")
         if self.edge_margin < 0:
             raise ValueError("edge_margin must be non-negative")
-        if set(class_thresholds) != {0, 1, 2}:
-            raise ValueError("class_thresholds must define class IDs 0, 1, and 2")
+        if set(class_thresholds) != taxonomy.valid_ids:
+            raise ValueError("class_thresholds must define exactly the taxonomy class IDs")
         for class_id, threshold in class_thresholds.items():
             if not 0 <= threshold <= 1:
                 raise ValueError(f"threshold for class {class_id} must be in [0, 1]")
         object.__setattr__(self, "class_thresholds", MappingProxyType(class_thresholds))
 
+    @property
+    def valid_class_ids(self) -> frozenset[int]:
+        return get_taxonomy(self.taxonomy).valid_ids
+
     def to_dict(self) -> dict[str, object]:
         return {
+            "task": self.task,
+            "taxonomy": self.taxonomy,
             "model_path": self.model_path,
             "device": self.device,
             "image_size": self.image_size,
@@ -72,6 +85,8 @@ class PipelineConfig:
             raise ValueError("class_thresholds must be a mapping")
 
         valid_keys = {
+            "task",
+            "taxonomy",
             "model_path",
             "device",
             "image_size",

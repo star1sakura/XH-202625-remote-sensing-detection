@@ -1,3 +1,5 @@
+task: obb
+taxonomy: legacy3
 model_path: runs/train/baseline/weights/best.engine
 device: "0"
 image_size: 1024
