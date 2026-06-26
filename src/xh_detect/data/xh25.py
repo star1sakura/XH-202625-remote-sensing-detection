@@ -1052,6 +1052,8 @@ def _validate_output_tree_paths(output_root: Path) -> None:
 
 
 def _validate_existing_output_root(output_root: Path) -> None:
+    if _is_reparse_point(output_root):
+        raise ValueError(f"refusing reparse point in output path: {output_root}")
     try:
         output_mode = os.lstat(output_root).st_mode
     except FileNotFoundError:

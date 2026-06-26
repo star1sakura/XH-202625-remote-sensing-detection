@@ -770,6 +770,19 @@ def test_is_reparse_point_returns_false_below_regular_file_ancestor(
     assert xh25_module._is_reparse_point(child_path) is False
 
 
+def test_validate_existing_output_root_rejects_reparse_points_before_directory_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_root = tmp_path / "output"
+    output_root.write_text("sentinel\n", encoding="utf-8")
+
+    monkeypatch.setattr(xh25_module, "_is_reparse_point", lambda path: Path(path) == output_root)
+
+    with pytest.raises(ValueError, match="reparse"):
+        xh25_module._validate_existing_output_root(output_root)
+
+
 def test_prepare_dataset_rejects_class_with_one_source_group(tmp_path: Path) -> None:
     source_root = tmp_path / "source"
     _write_class_sample(source_root, "class00_only", 0)
