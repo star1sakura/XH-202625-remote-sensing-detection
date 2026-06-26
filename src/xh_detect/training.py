@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from ultralytics import YOLO
 
 
@@ -7,6 +9,13 @@ def _non_empty(value: object, name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{name} must be a non-empty string")
     return value
+
+
+def _project_path(value: object, name: str = "project") -> str:
+    project = Path(_non_empty(value, name)).expanduser()
+    if not project.is_absolute():
+        project = Path.cwd() / project
+    return str(project.resolve())
 
 
 def _positive_int(value: object, name: str) -> int:
@@ -53,7 +62,7 @@ def train_model(
     batch = _positive_int(batch, "batch")
     workers = _non_negative_int(workers, "workers")
     amp = _bool(amp, "amp")
-    project = _non_empty(project, "project")
+    project = _project_path(project, "project")
     name = _non_empty(name, "name")
     resume = _bool(resume, "resume")
 

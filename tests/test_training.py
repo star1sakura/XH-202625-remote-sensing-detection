@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
@@ -10,6 +11,7 @@ from xh_detect.training import export_tensorrt, train_model
 @patch("xh_detect.training.YOLO")
 def test_train_model_passes_reproducible_arguments(yolo_class: Mock) -> None:
     model = yolo_class.return_value
+    expected_project = str((Path.cwd() / "runs/train").resolve())
 
     train_model("dataset.yaml", "yolo26s-obb.pt", epochs=2, image_size=1024, device="0")
 
@@ -24,7 +26,35 @@ def test_train_model_passes_reproducible_arguments(yolo_class: Mock) -> None:
         amp=False,
         seed=42,
         deterministic=True,
-        project="runs/train",
+        project=expected_project,
+        name="xh25-baseline",
+        exist_ok=True,
+        resume=False,
+    )
+
+
+@patch("xh_detect.training.YOLO")
+def test_train_model_resolves_relative_project_against_cwd(
+    yolo_class: Mock,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    model = yolo_class.return_value
+
+    train_model("dataset.yaml", "yolo26s-obb.pt", epochs=2, image_size=1024, device="0")
+
+    model.train.assert_called_once_with(
+        data="dataset.yaml",
+        epochs=2,
+        imgsz=1024,
+        device="0",
+        batch=8,
+        workers=4,
+        amp=False,
+        seed=42,
+        deterministic=True,
+        project=str((tmp_path / "runs/train").resolve()),
         name="xh25-baseline",
         exist_ok=True,
         resume=False,
@@ -34,6 +64,7 @@ def test_train_model_passes_reproducible_arguments(yolo_class: Mock) -> None:
 @patch("xh_detect.training.YOLO")
 def test_train_model_passes_official_baseline_options(yolo_class: Mock) -> None:
     model = yolo_class.return_value
+    expected_project = str((Path.cwd() / "runs/train").resolve())
 
     train_model(
         "datasets/xh25/dataset.yaml",
@@ -59,7 +90,7 @@ def test_train_model_passes_official_baseline_options(yolo_class: Mock) -> None:
         amp=False,
         seed=42,
         deterministic=True,
-        project="runs/train",
+        project=expected_project,
         name="xh25-baseline",
         exist_ok=True,
         resume=False,
