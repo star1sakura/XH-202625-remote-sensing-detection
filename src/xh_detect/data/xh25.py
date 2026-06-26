@@ -18,7 +18,7 @@ from types import MappingProxyType
 from uuid import uuid4
 
 import yaml
-from PIL import Image, UnidentifiedImageError
+from PIL import Image
 
 from xh_detect.data.xh25_fs import (
     _windows_error,
@@ -279,7 +279,7 @@ def audit_dataset(source_root: Path) -> DatasetAudit:
                         str(image.mode),
                         _average_hash(image),
                     )
-        except (OSError, UnidentifiedImageError, Image.DecompressionBombError) as error:
+        except Exception as error:
             errors.append(f"{image_path}: damaged image: {error}")
 
         if image_details is None:
@@ -382,7 +382,7 @@ def _is_reparse_point(path: Path) -> bool:
         return True
     try:
         attributes = getattr(os.lstat(path), "st_file_attributes", 0)
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
         return False
     reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
     return bool(attributes & reparse_flag)
@@ -1044,11 +1044,11 @@ def _fixed_output_directories(output_root: Path) -> tuple[Path, ...]:
 
 def _validate_output_tree_paths(output_root: Path) -> None:
     _assert_no_reparse_points(output_root)
+    for metadata_path in _metadata_paths(output_root):
+        _validate_output_target_parent(metadata_path, output_root)
     for directory in _fixed_output_directories(output_root):
         if _is_reparse_point(directory):
             raise ValueError(f"refusing reparse point in output path: {directory}")
-    for metadata_path in _metadata_paths(output_root):
-        _validate_output_target_parent(metadata_path, output_root)
 
 
 def _validate_existing_output_root(output_root: Path) -> None:
@@ -1298,8 +1298,8 @@ def prepare_dataset(
             f"source_root={resolved_source}, output_root={resolved_output}"
         )
 
-    _validate_output_tree_paths(output_root)
     _validate_existing_output_root(output_root)
+    _validate_output_tree_paths(output_root)
     audit = audit_dataset(source_root)
     train_records, val_records = _select_split(audit, val_ratio, seed)
     _assert_no_reparse_points(output_root.parent)

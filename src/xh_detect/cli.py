@@ -62,6 +62,10 @@ def _write_json(path: Path, payload: object) -> None:
     )
 
 
+def _unreadable_image_message(image_path: Path) -> str:
+    return f"cannot read image {image_path.name}: {image_path}"
+
+
 def build_app(config_path: Path):
     from xh_detect.app import build_app as build_gradio_app
 
@@ -208,7 +212,7 @@ def infer(
     config = PipelineConfig.from_yaml(config_path)
     image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
     if image is None:
-        raise typer.BadParameter(f"cannot read image: {image_path}")
+        raise typer.BadParameter(_unreadable_image_message(image_path))
 
     detector = _build_detector(config)
     pipeline = InferencePipeline(detector, config, output_dir / "cache")
@@ -270,7 +274,7 @@ def infer_dataset(
             raise typer.BadParameter(f"missing image for stem {stem!r}: {image_path}")
         image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
         if image is None:
-            raise typer.BadParameter(f"cannot read image: {image_path}")
+            raise typer.BadParameter(_unreadable_image_message(image_path))
         del image
 
     config = PipelineConfig.from_yaml(config_path)
@@ -283,7 +287,7 @@ def infer_dataset(
         image_path = images_dir / f"{stem}.jpg"
         image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
         if image is None:
-            raise typer.BadParameter(f"cannot read image: {image_path}")
+            raise typer.BadParameter(_unreadable_image_message(image_path))
         result = pipeline.run(image, stem)
         all_detections.extend(result.detections)
 

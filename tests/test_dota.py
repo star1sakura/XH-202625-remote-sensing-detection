@@ -291,6 +291,36 @@ def test_convert_split_skips_corrupt_images(tmp_path: Path) -> None:
     assert not (output_root / "images" / "train" / "broken.png").exists()
 
 
+def test_convert_split_skips_images_when_image_open_raises_module_not_found(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    images_dir = tmp_path / "images"
+    labels_dir = tmp_path / "labels"
+    output_root = tmp_path / "converted"
+    images_dir.mkdir()
+    labels_dir.mkdir()
+    image_path = images_dir / "broken.png"
+    image_path.write_bytes(b"not-a-real-png")
+
+    def raise_pi_heif_module_error(path: Path):
+        if Path(path) == image_path:
+            raise ModuleNotFoundError("No module named 'pi_heif'")
+        return Image.open(path)
+
+    monkeypatch.setattr(dota_module.Image, "open", raise_pi_heif_module_error)
+
+    stats = convert_split(images_dir, labels_dir, output_root, split="train")
+
+    assert stats == ConversionStats(
+        images=0,
+        targets={0: 0, 1: 0, 2: 0},
+        invalid_lines=0,
+        skipped_images=1,
+    )
+    assert not (output_root / "images" / "train" / "broken.png").exists()
+
+
 def test_write_dataset_yaml_writes_expected_contents(tmp_path: Path) -> None:
     dataset_root = tmp_path / "dataset"
 

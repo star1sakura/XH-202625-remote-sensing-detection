@@ -9,7 +9,7 @@ from pathlib import Path
 from types import MappingProxyType
 
 import yaml
-from PIL import Image, UnidentifiedImageError
+from PIL import Image
 from shapely.errors import GEOSException
 from shapely.geometry import Polygon
 
@@ -161,7 +161,7 @@ def convert_split(
             with Image.open(image_path) as image:
                 width, height = image.size
                 image.verify()
-        except (OSError, UnidentifiedImageError):
+        except Exception:
             skipped_images += 1
             continue
         _link_or_copy(image_path, images_output_dir / image_path.name)

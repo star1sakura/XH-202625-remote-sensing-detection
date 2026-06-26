@@ -16,6 +16,7 @@ import pytest
 import yaml
 from PIL import Image
 
+import xh_detect.data.xh25 as xh25_module
 from xh_detect.data.xh25 import (
     DatasetAudit,
     ImageRecord,
@@ -493,6 +494,34 @@ def test_audit_dataset_checks_invalid_label_when_paired_image_is_damaged(
     assert "class ID 25" in error_message
 
 
+def test_audit_dataset_treats_module_not_found_as_damaged_image_and_keeps_label_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "dataset"
+    image_path = source_root / "images" / "train" / "same.jpg"
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    image_path.write_bytes(b"not a jpeg")
+    label_path = source_root / "labels" / "train" / "same.txt"
+    _write_label(label_path, "25 0.5 0.5 0.2 0.2\n")
+
+    def raise_pi_heif_module_error(path: Path):
+        if Path(path) == image_path:
+            raise ModuleNotFoundError("No module named 'pi_heif'")
+        return Image.open(path)
+
+    monkeypatch.setattr(xh25_module.Image, "open", raise_pi_heif_module_error)
+
+    with pytest.raises(ValueError) as error:
+        audit_dataset(source_root)
+
+    error_message = str(error.value)
+    assert f"{image_path}: damaged image" in error_message
+    assert "No module named 'pi_heif'" in error_message
+    assert f"{label_path}:1" in error_message
+    assert "class ID 25" in error_message
+
+
 def test_audit_structures_are_frozen_and_defensively_copy_collections() -> None:
     annotations = [
         ObjectAnnotation(
@@ -697,6 +726,48 @@ def test_prepare_dataset_rejects_existing_regular_file_output_root(
 
     assert output_root.is_file()
     assert output_root.read_text(encoding="utf-8") == sentinel
+
+
+def test_prepare_dataset_rejects_existing_regular_file_output_root_before_descending(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    output_root = tmp_path / "output"
+    _write_complete_source(source_root)
+    output_root.write_text("keep this file unchanged\n", encoding="utf-8")
+    original_lstat = xh25_module.os.lstat
+
+    def linux_child_path_lstat(path: Path) -> os.stat_result:
+        path = Path(path)
+        if output_root in path.parents:
+            raise NotADirectoryError(f"not a directory: {path}")
+        return original_lstat(path)
+
+    monkeypatch.setattr(xh25_module.os, "lstat", linux_child_path_lstat)
+
+    with pytest.raises(ValueError, match=r"output_root.*directory"):
+        prepare_dataset(source_root, output_root)
+
+
+def test_is_reparse_point_returns_false_below_regular_file_ancestor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_file = tmp_path / "output"
+    child_path = parent_file / "images"
+    parent_file.write_text("sentinel\n", encoding="utf-8")
+    original_lstat = xh25_module.os.lstat
+
+    def linux_child_path_lstat(path: Path) -> os.stat_result:
+        path = Path(path)
+        if path == child_path:
+            raise NotADirectoryError(f"not a directory: {path}")
+        return original_lstat(path)
+
+    monkeypatch.setattr(xh25_module.os, "lstat", linux_child_path_lstat)
+
+    assert xh25_module._is_reparse_point(child_path) is False
 
 
 def test_prepare_dataset_rejects_class_with_one_source_group(tmp_path: Path) -> None:

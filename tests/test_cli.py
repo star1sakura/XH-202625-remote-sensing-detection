@@ -601,6 +601,7 @@ def test_infer_dataset_preflights_unreadable_images_before_model_load(tmp_path: 
 
     assert result.exit_code != 0
     assert "cannot read image" in result.output
+    assert "cannot read image corrupt.jpg" in result.output
     assert "corrupt.jpg" in result.output
     build_detector.assert_not_called()
 
