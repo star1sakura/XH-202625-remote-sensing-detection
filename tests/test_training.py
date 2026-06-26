@@ -19,11 +19,50 @@ def test_train_model_passes_reproducible_arguments(yolo_class: Mock) -> None:
         epochs=2,
         imgsz=1024,
         device="0",
+        batch=8,
+        workers=4,
+        amp=False,
         seed=42,
         deterministic=True,
         project="runs/train",
-        name="baseline",
+        name="xh25-baseline",
         exist_ok=True,
+        resume=False,
+    )
+
+
+@patch("xh_detect.training.YOLO")
+def test_train_model_passes_official_baseline_options(yolo_class: Mock) -> None:
+    model = yolo_class.return_value
+
+    train_model(
+        "datasets/xh25/dataset.yaml",
+        "yolo26s.pt",
+        epochs=1,
+        image_size=1024,
+        device="0",
+        batch=8,
+        workers=4,
+        amp=False,
+        project="runs/train",
+        name="xh25-baseline",
+        resume=False,
+    )
+
+    model.train.assert_called_once_with(
+        data="datasets/xh25/dataset.yaml",
+        epochs=1,
+        imgsz=1024,
+        device="0",
+        batch=8,
+        workers=4,
+        amp=False,
+        seed=42,
+        deterministic=True,
+        project="runs/train",
+        name="xh25-baseline",
+        exist_ok=True,
+        resume=False,
     )
 
 
@@ -58,3 +97,19 @@ def test_export_tensorrt_returns_exported_path(yolo_class: Mock) -> None:
 def test_training_wrappers_validate_arguments(function, args) -> None:
     with pytest.raises((TypeError, ValueError)):
         function(*args)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"batch": 0},
+        {"workers": -1},
+        {"amp": "false"},
+        {"project": ""},
+        {"name": ""},
+        {"resume": "false"},
+    ],
+)
+def test_train_model_validates_reproducible_options(kwargs: dict[str, object]) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        train_model("data.yaml", "model.pt", 1, 640, "cpu", **kwargs)

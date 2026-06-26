@@ -17,18 +17,45 @@ def _positive_int(value: object, name: str) -> int:
     return value
 
 
+def _non_negative_int(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be a non-negative integer")
+    if value < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+    return value
+
+
+def _bool(value: object, name: str) -> bool:
+    if not isinstance(value, bool):
+        raise TypeError(f"{name} must be a boolean")
+    return value
+
+
 def train_model(
     dataset_yaml: str,
     model_path: str,
     epochs: int,
     image_size: int,
     device: str,
+    *,
+    batch: int = 8,
+    workers: int = 4,
+    amp: bool = False,
+    project: str = "runs/train",
+    name: str = "xh25-baseline",
+    resume: bool = False,
 ) -> None:
     dataset = _non_empty(dataset_yaml, "dataset_yaml")
     model_source = _non_empty(model_path, "model_path")
     epochs = _positive_int(epochs, "epochs")
     image_size = _positive_int(image_size, "image_size")
     device = _non_empty(device, "device")
+    batch = _positive_int(batch, "batch")
+    workers = _non_negative_int(workers, "workers")
+    amp = _bool(amp, "amp")
+    project = _non_empty(project, "project")
+    name = _non_empty(name, "name")
+    resume = _bool(resume, "resume")
 
     model = YOLO(model_source)
     model.train(
@@ -36,11 +63,15 @@ def train_model(
         epochs=epochs,
         imgsz=image_size,
         device=device,
+        batch=batch,
+        workers=workers,
+        amp=amp,
         seed=42,
         deterministic=True,
-        project="runs/train",
-        name="baseline",
+        project=project,
+        name=name,
         exist_ok=True,
+        resume=resume,
     )
 
 

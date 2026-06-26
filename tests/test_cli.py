@@ -141,10 +141,67 @@ def test_train_command_calls_wrapper(train_model: Mock, tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     train_model.assert_called_once_with(
         str(dataset),
-        "yolo26s-obb.pt",
+        "yolo26s.pt",
         2,
         1024,
         "0",
+        batch=8,
+        workers=4,
+        amp=False,
+        project="runs/train",
+        name="xh25-baseline",
+        resume=False,
+    )
+
+
+@patch("xh_detect.cli.train_model")
+def test_train_command_forwards_reproducible_options(
+    train_model: Mock,
+    tmp_path: Path,
+) -> None:
+    dataset = tmp_path / "dataset.yaml"
+    dataset.write_text("names: {}", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "train",
+            "--dataset-yaml",
+            str(dataset),
+            "--model",
+            "yolo26s-obb.pt",
+            "--epochs",
+            "1",
+            "--image-size",
+            "512",
+            "--device",
+            "cpu",
+            "--batch",
+            "2",
+            "--workers",
+            "0",
+            "--amp",
+            "--project",
+            "runs/obb",
+            "--name",
+            "legacy-obb",
+            "--resume",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    train_model.assert_called_once_with(
+        str(dataset),
+        "yolo26s-obb.pt",
+        1,
+        512,
+        "cpu",
+        batch=2,
+        workers=0,
+        amp=True,
+        project="runs/obb",
+        name="legacy-obb",
+        resume=True,
     )
 
 

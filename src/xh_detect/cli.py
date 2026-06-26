@@ -167,12 +167,30 @@ def train(
         Path,
         typer.Option(exists=True, dir_okay=False),
     ],
-    model: Annotated[str, typer.Option()] = "yolo26s-obb.pt",
+    model: Annotated[str, typer.Option()] = "yolo26s.pt",
     epochs: Annotated[int, typer.Option(min=1)] = 30,
     image_size: Annotated[int, typer.Option(min=1)] = 1024,
     device: Annotated[str, typer.Option()] = "0",
+    batch: Annotated[int, typer.Option(min=1)] = 8,
+    workers: Annotated[int, typer.Option(min=0)] = 4,
+    amp: Annotated[bool, typer.Option()] = False,
+    project: Annotated[str, typer.Option()] = "runs/train",
+    name: Annotated[str, typer.Option()] = "xh25-baseline",
+    resume: Annotated[bool, typer.Option()] = False,
 ) -> None:
-    train_model(str(dataset_yaml), model, epochs, image_size, device)
+    train_model(
+        str(dataset_yaml),
+        model,
+        epochs,
+        image_size,
+        device,
+        batch=batch,
+        workers=workers,
+        amp=amp,
+        project=project,
+        name=name,
+        resume=resume,
+    )
 
 
 @app.command()
