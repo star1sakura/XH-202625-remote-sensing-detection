@@ -62,6 +62,40 @@ def test_train_model_resolves_relative_project_against_cwd(
 
 
 @patch("xh_detect.training.YOLO")
+def test_train_model_preserves_absolute_project_path(
+    yolo_class: Mock,
+    tmp_path: Path,
+) -> None:
+    model = yolo_class.return_value
+    project = (tmp_path / "custom-runs").resolve()
+
+    train_model(
+        "dataset.yaml",
+        "yolo26s-obb.pt",
+        epochs=2,
+        image_size=1024,
+        device="0",
+        project=str(project),
+    )
+
+    model.train.assert_called_once_with(
+        data="dataset.yaml",
+        epochs=2,
+        imgsz=1024,
+        device="0",
+        batch=8,
+        workers=4,
+        amp=False,
+        seed=42,
+        deterministic=True,
+        project=str(project),
+        name="xh25-baseline",
+        exist_ok=True,
+        resume=False,
+    )
+
+
+@patch("xh_detect.training.YOLO")
 def test_train_model_passes_official_baseline_options(yolo_class: Mock) -> None:
     model = yolo_class.return_value
     expected_project = str((Path.cwd() / "runs/train").resolve())
