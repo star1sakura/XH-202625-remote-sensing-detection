@@ -4,8 +4,9 @@
 数据转换、YOLO26s-OBB 训练、超大图滑窗推理、跨切片合并、COCO JSON
 导出、比赛规则评估、Gradio Demo 和 10,000×10,000 性能基准。
 
-当前代码闭环已完成；正式比赛数据尚未开放时，可先使用 DOTA-v1.5 或
-Ultralytics `dota8.yaml` 完成服务器、训练和推理冒烟。
+当前代码闭环已完成；正式 XH25 数据使用 25 类 taxonomy 和 HBB 配置完成训练、
+推理与 Demo。没有正式数据或只做冒烟时，仍可使用 DOTA-v1.5 或 Ultralytics
+`dota8.yaml` 完成服务器、训练和推理检查。
 
 ## 1. 目标与指标
 
@@ -41,7 +42,61 @@ bash scripts/bootstrap_gpu_server.sh
 PyTorch，防止依赖解析器下载另一套 PyTorch/CUDA。普通 CPU 开发机仍可使用
 `uv sync --extra dev`。
 
-## 3. 无正式数据时的快速检查
+## 3. 官方 XH25 工作流
+
+正式数据流程使用 `configs/xh25-hbb.yaml`、25 类 XH25 taxonomy，以及 HBB
+检测任务；其中类别 0..3 为舰船，4..23 为飞机，24 为车辆。数据统计和切分结果
+记录在 [docs/xh25-data-analysis.md](docs/xh25-data-analysis.md)。
+
+准备官方 XH25 数据：
+
+```bash
+.venv/bin/xh-detect prepare-xh25 \
+  --source-root data \
+  --output-root datasets/xh25 \
+  --val-ratio 0.15 \
+  --seed 42
+```
+
+一轮官方 HBB baseline 训练：
+
+```bash
+.venv/bin/xh-detect train \
+  --dataset-yaml datasets/xh25/dataset.yaml \
+  --model yolo26s.pt \
+  --epochs 1 \
+  --image-size 1024 \
+  --batch 8 \
+  --workers 4 \
+  --no-amp \
+  --name xh25-baseline \
+  --device 0
+```
+
+启动官方 Demo：
+
+```bash
+.venv/bin/xh-detect serve \
+  --config-path configs/xh25-hbb.yaml \
+  --host 127.0.0.1 \
+  --port 7860
+```
+
+对验证集导出提交/评估用 COCO Detection JSON：
+
+```bash
+.venv/bin/xh-detect infer-dataset \
+  --images-dir datasets/xh25/images/val \
+  --image-map-json datasets/xh25/manifests/val-image-map.json \
+  --config-path configs/xh25-hbb.yaml \
+  --output-json outputs/xh25/val-predictions.json
+```
+
+官方整体指标是主比赛风格分数；粗粒度诊断按舰船、飞机、车辆聚合，用于定位大类
+短板；细粒度诊断保留 25 类逐类表现。HM、LQS 样本极少，调参时不要只追逐这些
+稀缺类的噪声收益，应同时监控整体和粗粒度表现。
+
+## 4. 无正式数据时的快速检查
 
 不下载权重、不需要 GPU 的完整假检测器闭环：
 
@@ -62,7 +117,7 @@ PyTorch，防止依赖解析器下载另一套 PyTorch/CUDA。普通 CPU 开发�
 
 该命令会下载公开样例数据和预训练权重。
 
-## 4. DOTA-v1.5 数据准备
+## 5. DOTA-v1.5 数据准备
 
 从 [DOTA 官方页面](https://captain-whu.github.io/DOTA/dataset.html) 获取
 train、val 图像和 `labelTxt-v1.5`，整理为：
@@ -99,7 +154,7 @@ datasets/dota3/
 转换器保留无目标图像作为负样本，跳过损坏图像和 `difficult=1` 标注，并报告
 无效标注数量。
 
-## 5. 三类基线训练
+## 6. 三类基线训练
 
 ```bash
 .venv/bin/xh-detect train \
@@ -122,7 +177,7 @@ runs/train/baseline/
 训练参数固定 `seed=42` 和 `deterministic=true`。正式冲榜前应记录数据版本、
 代码 commit、配置、最佳权重和训练曲线。
 
-## 6. 单图与超大图推理
+## 7. 单图与超大图推理
 
 编辑 [configs/baseline.yaml](configs/baseline.yaml) 中的 `model_path`，然后：
 
@@ -143,7 +198,7 @@ runs/train/baseline/
 流水线会自动滑窗、补边、按类别阈值过滤、过滤内部切片边缘碎片、回映坐标并做
 同类旋转框 NMS。CUDA OOM 时会自动降低 batch size。
 
-## 7. 比赛规则评估与阈值扫描
+## 8. 比赛规则评估与阈值扫描
 
 ```bash
 .venv/bin/xh-detect evaluate \
@@ -160,7 +215,7 @@ runs/train/baseline/
 评估器按置信度降序执行一对一贪心匹配，重复预测计 FP，并输出整体、分类别和
 分图 TP、FP、FN、Recall、FDR。
 
-## 8. Gradio Demo
+## 9. Gradio Demo
 
 ```bash
 .venv/bin/xh-detect serve \
@@ -179,7 +234,7 @@ runs/train/baseline/
 
 Demo 默认限制单并发，避免同一 GPU 同时运行多个大图任务。
 
-## 9. 10,000×10,000 性能基准
+## 10. 10,000×10,000 性能基准
 
 PyTorch FP16：
 
@@ -207,7 +262,7 @@ TensorRT FP16：
 
 不要使用切片缓存做正式速度验收；benchmark 命令已关闭缓存。
 
-## 10. 质量检查
+## 11. 质量检查
 
 ```bash
 .venv/bin/python -m ruff format --check .
@@ -229,7 +284,7 @@ bash scripts/bootstrap_gpu_server.sh
   device=0
 ```
 
-## 11. 一周推进建议
+## 12. 一周推进建议
 
 1. 第 1 天：4090 环境、DOTA8 冒烟、DOTA-v1.5 转换；
 2. 第 2 天：30 epoch 三类基线并检查错误样本；
@@ -242,7 +297,7 @@ bash scripts/bootstrap_gpu_server.sh
 一天完成两到三天的计划量是可行的，但 GPU 训练、数据下载和错误分析存在串行
 依赖。应以“可验证产物”推进，而不是只累计代码量。
 
-## 12. 许可与数据使用
+## 13. 许可与数据使用
 
 - DOTA 图像来自 Google Earth、卫星和航拍来源，使用前阅读
   [DOTA 数据说明](https://captain-whu.github.io/DOTA/dataset.html)及各图像来源条款；
