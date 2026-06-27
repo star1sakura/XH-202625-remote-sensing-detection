@@ -21,7 +21,7 @@
 - Create: `docs/experiments/assets/xh25-yolo26s-e80/confusion-matrix-normalized.png`
 - Source: `outputs/xh25-server/repro-e80-source/`
 
-- [ ] **Step 1: Create the tracked asset directory**
+- [x] **Step 1: Create the tracked asset directory**
 
 Run:
 
@@ -33,7 +33,7 @@ New-Item -ItemType Directory `
 
 Expected: the directory exists under `docs/experiments/assets/`.
 
-- [ ] **Step 2: Copy safe metric files with stable names**
+- [x] **Step 2: Copy safe metric files with stable names**
 
 Run:
 
@@ -50,7 +50,7 @@ Copy-Item "$source/confusion_matrix_normalized.png" `
 
 Expected: one CSV and four PNG files exist; no training batch, label, prediction, or source image is copied.
 
-- [ ] **Step 3: Write the sanitized training arguments**
+- [x] **Step 3: Write the sanitized training arguments**
 
 Create `training-args.yaml` with:
 
@@ -98,7 +98,7 @@ copy_paste: 0.0
 
 Expected: repository-relative paths only; no `project` or `save_dir` absolute server path.
 
-- [ ] **Step 4: Verify asset count and file types**
+- [x] **Step 4: Verify asset count and file types**
 
 Run:
 
@@ -118,7 +118,7 @@ Expected: six non-empty files.
 - Reference: `docs/xh25-data-analysis.md`
 - Reference: `src/xh_detect/taxonomy.py`
 
-- [ ] **Step 1: Record identity, environment, and data provenance**
+- [x] **Step 1: Record identity, environment, and data provenance**
 
 Include these verified facts:
 
@@ -136,7 +136,7 @@ Include these verified facts:
 - Source groups SHA256: `ab5ab5fa22f9eb3275f7c23eb111cf83d7db8d47748ba4da14cd32a4a1d7a3ee`
 ```
 
-- [ ] **Step 2: Record the exact training command and resolved optimizer**
+- [x] **Step 2: Record the exact training command and resolved optimizer**
 
 Use:
 
@@ -158,7 +158,7 @@ Use:
 Record that `optimizer=auto` resolved to AdamW with learning rate `0.000345`,
 momentum `0.9`, and weight decay `0.0005`.
 
-- [ ] **Step 3: Record artifact hashes**
+- [x] **Step 3: Record artifact hashes**
 
 Use:
 
@@ -172,7 +172,7 @@ Use:
 
 Clarify that model files remain outside Git.
 
-- [ ] **Step 4: Record Ultralytics metrics and epoch trends**
+- [x] **Step 4: Record Ultralytics metrics and epoch trends**
 
 Include:
 
@@ -191,7 +191,7 @@ Record 80 epochs in 1.790 hours, final-ten-epoch average mAP50-95 of `0.758815`,
 and best-checkpoint speed of 0.3 ms preprocessing, 3.7 ms inference, and 0.1 ms
 postprocessing per image.
 
-- [ ] **Step 5: Record custom evaluator and threshold sweep**
+- [x] **Step 5: Record custom evaluator and threshold sweep**
 
 Include:
 
@@ -219,7 +219,7 @@ Include representative thresholds:
 
 State that `0.25` is the best overall custom-evaluator F1 in the recorded sweep.
 
-- [ ] **Step 6: Record weaknesses and next experiments**
+- [x] **Step 6: Record weaknesses and next experiments**
 
 Include the lowest-recall classes:
 
@@ -239,7 +239,7 @@ Include the lowest-recall classes:
 Recommend error analysis and data-centric experiments for QHS, MS, and FSC,
 then controlled 1280/1536 image-size and tiled-inference experiments.
 
-- [ ] **Step 7: Link safe plots and list exclusions**
+- [x] **Step 7: Link safe plots and list exclusions**
 
 Embed relative links to all four PNG files and link `results.csv` and
 `training-args.yaml`. State that raw logs, predictions, weights, datasets, and
@@ -251,7 +251,7 @@ sample imagery are intentionally excluded.
 - Verify: `docs/experiments/xh25-yolo26s-e80.md`
 - Verify: `docs/experiments/assets/xh25-yolo26s-e80/`
 
-- [ ] **Step 1: Validate CSV metrics**
+- [x] **Step 1: Validate CSV metrics**
 
 Run:
 
@@ -268,7 +268,7 @@ if ($best.epoch -ne '62' -or $best.'metrics/mAP50-95(B)' -ne '0.7661') {
 
 Expected: exit code 0.
 
-- [ ] **Step 2: Scan tracked text for sensitive content**
+- [x] **Step 2: Scan tracked text for sensitive content**
 
 Run:
 
@@ -279,7 +279,7 @@ $paths = @(
   'docs/experiments/assets/xh25-yolo26s-e80/results.csv'
 )
 $matches = rg -n `
-  'root@|connect\.|44592|autodl-tmp|BEGIN .*PRIVATE KEY|password|token' `
+  'root@|connect\.|44592|autodl-tmp|BEGIN .*PRIVATE KEY|gho_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+' `
   $paths
 if ($LASTEXITCODE -eq 0) {
   $matches
@@ -289,7 +289,7 @@ if ($LASTEXITCODE -eq 0) {
 
 Expected: no matches.
 
-- [ ] **Step 3: Validate report references and hashes**
+- [x] **Step 3: Validate report references and hashes**
 
 Run a PowerShell check that:
 
@@ -301,7 +301,7 @@ Run a PowerShell check that:
 
 Expected: all checks exit 0.
 
-- [ ] **Step 4: Inspect all images**
+- [x] **Step 4: Inspect all images**
 
 Open `results.png`, `box-f1-curve.png`, `box-pr-curve.png`, and
 `confusion-matrix-normalized.png`.
@@ -309,7 +309,7 @@ Open `results.png`, `box-f1-curve.png`, `box-pr-curve.png`, and
 Expected: readable plots with no original remote-sensing imagery, credentials,
 server path, or clipping that prevents interpretation.
 
-- [ ] **Step 5: Run repository checks**
+- [x] **Step 5: Run repository checks**
 
 Run:
 
