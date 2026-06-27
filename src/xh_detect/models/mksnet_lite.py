@@ -16,7 +16,10 @@ def _kernel_sizes(value: Sequence[int]) -> tuple[int, ...]:
     kernels = tuple(value)
     if not kernels:
         raise ValueError("kernel_sizes must contain at least one kernel")
-    if any(isinstance(item, bool) or not isinstance(item, int) or item <= 0 or item % 2 == 0 for item in kernels):
+    if any(
+        isinstance(item, bool) or not isinstance(item, int) or item <= 0 or item % 2 == 0
+        for item in kernels
+    ):
         raise ValueError("kernel sizes must be odd positive integers")
     return kernels
 
