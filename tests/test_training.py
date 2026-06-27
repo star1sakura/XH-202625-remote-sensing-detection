@@ -131,6 +131,45 @@ def test_train_model_passes_official_baseline_options(yolo_class: Mock) -> None:
     )
 
 
+@patch("xh_detect.training.register_custom_modules")
+@patch("xh_detect.training.YOLO")
+def test_train_model_registers_custom_modules_before_model_load(
+    yolo_class: Mock,
+    register_custom_modules: Mock,
+) -> None:
+    events: list[str] = []
+    register_custom_modules.side_effect = lambda: events.append("register")
+    yolo_class.side_effect = lambda model_path: events.append(f"yolo:{model_path}") or Mock()
+
+    train_model("dataset.yaml", "configs/models/xh25-mksnet-lite.yaml", 1, 640, "cpu")
+
+    assert events[:2] == ["register", "yolo:configs/models/xh25-mksnet-lite.yaml"]
+
+
+@patch("xh_detect.training.register_custom_modules")
+@patch("xh_detect.training.YOLO")
+def test_train_model_loads_optional_pretrained_weights(
+    yolo_class: Mock,
+    register_custom_modules: Mock,
+) -> None:
+    model = yolo_class.return_value
+    model.load.return_value = model
+
+    train_model(
+        "dataset.yaml",
+        "configs/models/xh25-mksnet-lite.yaml",
+        1,
+        640,
+        "cpu",
+        pretrained="yolo26s.pt",
+    )
+
+    register_custom_modules.assert_called_once_with()
+    yolo_class.assert_called_once_with("configs/models/xh25-mksnet-lite.yaml")
+    model.load.assert_called_once_with("yolo26s.pt")
+    model.train.assert_called_once()
+
+
 @patch("xh_detect.training.YOLO")
 def test_export_tensorrt_returns_exported_path(yolo_class: Mock) -> None:
     model = yolo_class.return_value

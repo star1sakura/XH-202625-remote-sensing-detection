@@ -9,6 +9,7 @@ import numpy as np
 import torch
 from ultralytics import YOLO
 
+from xh_detect.models.ultralytics import register_custom_modules
 from xh_detect.types import BoxPrediction, ImageArray, Polygon4
 
 _INT64_MAX = int(np.iinfo(np.int64).max)
@@ -340,6 +341,7 @@ class UltralyticsDetector:
         self.image_size = _validate_positive_integer(image_size, "image_size")
         self.half = _validate_bool(half, "half")
         self.task = _validate_task(task)
+        register_custom_modules()
         self.model = YOLO(validated_model_path)
 
     def predict(self, images: list[ImageArray], confidence: float) -> list[list[BoxPrediction]]:

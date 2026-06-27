@@ -196,6 +196,28 @@ def test_ultralytics_detector_rejects_unknown_task() -> None:
         )
 
 
+def test_ultralytics_detector_registers_custom_modules_before_model_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from xh_detect import detector as detector_module
+
+    events: list[str] = []
+    monkeypatch.setattr(
+        detector_module,
+        "register_custom_modules",
+        lambda: events.append("register"),
+    )
+    monkeypatch.setattr(
+        detector_module,
+        "YOLO",
+        lambda model_path: events.append(f"yolo:{model_path}") or FakeModel([]),
+    )
+
+    detector_module.UltralyticsDetector("weights.pt", "cpu", 640, False, task="detect")
+
+    assert events == ["register", "yolo:weights.pt"]
+
+
 @pytest.mark.parametrize("initial_batch_size", [0, -1, True])
 def test_predict_with_oom_backoff_rejects_invalid_batch_size(initial_batch_size: object) -> None:
     from xh_detect.detector import predict_with_oom_backoff

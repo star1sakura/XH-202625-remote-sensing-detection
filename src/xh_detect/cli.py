@@ -172,6 +172,7 @@ def train(
         typer.Option(exists=True, dir_okay=False),
     ],
     model: Annotated[str, typer.Option()] = "yolo26s.pt",
+    pretrained: Annotated[str | None, typer.Option()] = None,
     epochs: Annotated[int, typer.Option(min=1)] = 30,
     image_size: Annotated[int, typer.Option(min=1)] = 1024,
     device: Annotated[str, typer.Option()] = "0",
@@ -194,6 +195,7 @@ def train(
         project=project,
         name=name,
         resume=resume,
+        pretrained=pretrained,
     )
 
 

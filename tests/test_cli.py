@@ -151,6 +151,7 @@ def test_train_command_calls_wrapper(train_model: Mock, tmp_path: Path) -> None:
         project="runs/train",
         name="xh25-baseline",
         resume=False,
+        pretrained=None,
     )
 
 
@@ -202,6 +203,47 @@ def test_train_command_forwards_reproducible_options(
         project="runs/obb",
         name="legacy-obb",
         resume=True,
+        pretrained=None,
+    )
+
+
+@patch("xh_detect.cli.train_model")
+def test_train_command_forwards_pretrained_option(
+    train_model: Mock,
+    tmp_path: Path,
+) -> None:
+    dataset = tmp_path / "dataset.yaml"
+    dataset.write_text("names: {}", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "train",
+            "--dataset-yaml",
+            str(dataset),
+            "--model",
+            "configs/models/xh25-mksnet-lite.yaml",
+            "--pretrained",
+            "yolo26s.pt",
+            "--epochs",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    train_model.assert_called_once_with(
+        str(dataset),
+        "configs/models/xh25-mksnet-lite.yaml",
+        2,
+        1024,
+        "0",
+        batch=8,
+        workers=4,
+        amp=False,
+        project="runs/train",
+        name="xh25-baseline",
+        resume=False,
+        pretrained="yolo26s.pt",
     )
 
 

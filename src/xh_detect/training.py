@@ -4,6 +4,8 @@ from pathlib import Path
 
 from ultralytics import YOLO
 
+from xh_detect.models.ultralytics import register_custom_modules
+
 
 def _non_empty(value: object, name: str) -> str:
     if not isinstance(value, str) or not value.strip():
@@ -53,6 +55,7 @@ def train_model(
     project: str = "runs/train",
     name: str = "xh25-baseline",
     resume: bool = False,
+    pretrained: str | None = None,
 ) -> None:
     dataset = _non_empty(dataset_yaml, "dataset_yaml")
     model_source = _non_empty(model_path, "model_path")
@@ -65,8 +68,12 @@ def train_model(
     project = _project_path(project, "project")
     name = _non_empty(name, "name")
     resume = _bool(resume, "resume")
+    pretrained_model = None if pretrained is None else _non_empty(pretrained, "pretrained")
 
+    register_custom_modules()
     model = YOLO(model_source)
+    if pretrained_model is not None:
+        model = model.load(pretrained_model)
     model.train(
         data=dataset,
         epochs=epochs,
