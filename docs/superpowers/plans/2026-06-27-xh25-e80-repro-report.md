@@ -331,7 +331,7 @@ Expected: no whitespace, Ruff, or pytest failures.
 - Exclude: `demo_assets/`
 - Exclude: `outputs/`
 
-- [ ] **Step 1: Review exact Git scope**
+- [x] **Step 1: Review exact Git scope**
 
 Run:
 
@@ -343,7 +343,7 @@ git diff --stat
 Expected: only the design, plan, report, and six sanitized assets are in scope;
 `demo_assets/` remains untracked.
 
-- [ ] **Step 2: Commit the implementation**
+- [x] **Step 2: Commit the implementation**
 
 Run:
 
@@ -356,7 +356,7 @@ git commit -m "docs: add xh25 e80 reproducibility record"
 
 Expected: one implementation commit after the design commit.
 
-- [ ] **Step 3: Merge into main and verify**
+- [x] **Step 3: Merge into main and verify**
 
 Run:
 
@@ -369,7 +369,7 @@ git merge --ff-only codex/xh25-e80-repro-report
 
 Expected: fast-forward merge and no pytest failures.
 
-- [ ] **Step 4: Push and compare SHAs**
+- [x] **Step 4: Push and compare SHAs**
 
 Run:
 
