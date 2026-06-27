@@ -13,6 +13,7 @@ import typer
 import ultralytics
 
 from xh_detect import __version__
+from xh_detect.compare import compare_experiments
 from xh_detect.config import PipelineConfig
 from xh_detect.data.dota import ConversionStats, convert_split, write_dataset_yaml
 from xh_detect.data.xh25 import prepare_dataset
@@ -361,6 +362,40 @@ def sweep_thresholds_command(
     ]
     _write_json(output_path, payload)
     typer.echo(str(output_path))
+
+
+@app.command("compare-experiments")
+def compare_experiments_command(
+    baseline_report: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False),
+    ],
+    experiment_report: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False),
+    ],
+    output_dir: Annotated[Path, typer.Option()] = Path("outputs/xh25/mksnet-lite"),
+    baseline_name: Annotated[str, typer.Option()] = "xh25-yolo26s-e80",
+    experiment_name: Annotated[str, typer.Option()] = "xh25-mksnet-lite",
+    baseline_benchmark: Annotated[
+        Path | None,
+        typer.Option(exists=True, dir_okay=False),
+    ] = None,
+    experiment_benchmark: Annotated[
+        Path | None,
+        typer.Option(exists=True, dir_okay=False),
+    ] = None,
+) -> None:
+    comparison = compare_experiments(
+        baseline_report=baseline_report,
+        experiment_report=experiment_report,
+        output_dir=output_dir,
+        baseline_name=baseline_name,
+        experiment_name=experiment_name,
+        baseline_benchmark=baseline_benchmark,
+        experiment_benchmark=experiment_benchmark,
+    )
+    typer.echo(json.dumps(comparison["overall"], ensure_ascii=False, allow_nan=False))
 
 
 @app.command()
