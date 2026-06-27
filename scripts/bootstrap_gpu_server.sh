@@ -25,6 +25,7 @@ export UV_LINK_MODE="${UV_LINK_MODE:-copy}"
 
 uv pip install --python "${VENV_DIR}/bin/python" \
   "gradio==6.19.0" \
+  "numpy>=1.26,<2" \
   "opencv-python>=4.10,<5" \
   "shapely>=2,<3" \
   "typer>=0.16,<1" \
@@ -33,7 +34,7 @@ uv pip install --python "${VENV_DIR}/bin/python" \
   "pytest-cov>=5,<8" \
   "ruff>=0.11,<1" \
   "editables>=0.3,<0.4" \
-  scipy \
+  "scipy>=1.13,<1.15" \
   py-cpuinfo \
   polars
 

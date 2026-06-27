@@ -142,13 +142,13 @@ YOLO26s/HBB、滑窗推理和比赛评估流程，只在 YOLO neck 中加入轻�
 ```bash
 .venv/bin/xh-detect evaluate \
   --predictions-json outputs/xh25/baseline/val-predictions.json \
-  --ground-truth-json datasets/xh25/annotations/val-coco.json \
+  --ground-truth-json datasets/xh25/reports/val-ground-truth.json \
   --output-path outputs/xh25/baseline/report.json \
   --taxonomy xh25
 
 .venv/bin/xh-detect evaluate \
   --predictions-json outputs/xh25/mksnet-lite/val-predictions.json \
-  --ground-truth-json datasets/xh25/annotations/val-coco.json \
+  --ground-truth-json datasets/xh25/reports/val-ground-truth.json \
   --output-path outputs/xh25/mksnet-lite/report.json \
   --taxonomy xh25
 ```
