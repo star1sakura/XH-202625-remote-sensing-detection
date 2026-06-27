@@ -378,6 +378,50 @@ def test_sweep_thresholds_command_writes_json(
     threshold_sweep.assert_called_once_with([], [], thresholds, taxonomy=taxonomy)
 
 
+def _minimal_comparison_report() -> dict[str, object]:
+    return {
+        "overall_class_agnostic": {
+            "tp": 1,
+            "fp": 0,
+            "fn": 1,
+            "recall": 0.5,
+            "fdr": 0.0,
+        },
+        "by_coarse_class": {},
+        "by_fine_class": {},
+        "by_image": {},
+    }
+
+
+def test_compare_experiments_command_reports_comparison_value_errors(
+    tmp_path: Path,
+) -> None:
+    baseline_report = tmp_path / "baseline-report.json"
+    experiment_report = tmp_path / "experiment-report.json"
+    baseline_benchmark = tmp_path / "baseline-benchmark.json"
+    baseline_report.write_text(json.dumps(_minimal_comparison_report()), encoding="utf-8")
+    experiment_report.write_text(json.dumps(_minimal_comparison_report()), encoding="utf-8")
+    baseline_benchmark.write_text(json.dumps({"median_s": 1.0}), encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "compare-experiments",
+            "--baseline-report",
+            str(baseline_report),
+            "--experiment-report",
+            str(experiment_report),
+            "--baseline-benchmark",
+            str(baseline_benchmark),
+        ],
+    )
+
+    assert result.exit_code != 0
+    compact_output = "".join(char for char in result.output if char.isalnum() or char == "_")
+    assert "baseline_benchmarkandexperiment_benchmarkmustbeprovidedtogether" in compact_output
+    assert "Traceback" not in result.output
+
+
 @patch("xh_detect.cli.export_coco_results")
 @patch("xh_detect.cli.draw_detections")
 @patch("xh_detect.cli.InferencePipeline")

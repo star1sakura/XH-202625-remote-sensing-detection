@@ -5,7 +5,9 @@ from collections.abc import Mapping
 from pathlib import Path
 
 FINE_WATCHLIST = ("0", "1", "24")
+REQUIRED_METRIC_KEYS = ("tp", "fp", "fn", "recall", "fdr")
 ROUND_DIGITS = 6
+ZERO_METRICS = {"tp": 0, "fp": 0, "fn": 0, "recall": 0.0, "fdr": 0.0}
 
 
 def compare_experiments(
@@ -32,11 +34,15 @@ def compare_experiments(
         "overall": _metric_block(
             _section(baseline, "overall_class_agnostic", "baseline report"),
             _section(experiment, "overall_class_agnostic", "experiment report"),
+            baseline_label="baseline overall",
+            experiment_label="experiment overall",
         ),
-        "coarse_groups": {
+        "coarse": {
             group: _metric_block(
                 _nested_metric(baseline_coarse, group, "baseline coarse group"),
                 _nested_metric(experiment_coarse, group, "experiment coarse group"),
+                baseline_label=f"baseline coarse group {group!r}",
+                experiment_label=f"experiment coarse group {group!r}",
             )
             for group in sorted(set(baseline_coarse) | set(experiment_coarse))
         },
@@ -44,6 +50,8 @@ def compare_experiments(
             class_id: _metric_block(
                 _nested_metric(baseline_fine, class_id, "baseline fine class"),
                 _nested_metric(experiment_fine, class_id, "experiment fine class"),
+                baseline_label=f"baseline fine class {class_id!r}",
+                experiment_label=f"experiment fine class {class_id!r}",
             )
             for class_id in FINE_WATCHLIST
         },
@@ -93,7 +101,9 @@ def _nested_metric(
     key: str,
     label: str,
 ) -> Mapping[str, object]:
-    value = section.get(key, {})
+    if key not in section:
+        return ZERO_METRICS
+    value = section[key]
     if not isinstance(value, Mapping):
         raise ValueError(f"{label} {key!r} must be an object")
     return value
@@ -102,33 +112,22 @@ def _nested_metric(
 def _metric_block(
     baseline: Mapping[str, object],
     experiment: Mapping[str, object],
+    *,
+    baseline_label: str,
+    experiment_label: str,
 ) -> dict[str, int | float]:
+    _validate_metric_object(baseline, baseline_label)
+    _validate_metric_object(experiment, experiment_label)
     baseline_tp = _count(baseline, "tp")
     baseline_fp = _count(baseline, "fp")
     baseline_fn = _count(baseline, "fn")
     experiment_tp = _count(experiment, "tp")
     experiment_fp = _count(experiment, "fp")
     experiment_fn = _count(experiment, "fn")
-    baseline_recall = _metric_value(
-        baseline,
-        "recall",
-        _ratio(baseline_tp, baseline_tp + baseline_fn),
-    )
-    experiment_recall = _metric_value(
-        experiment,
-        "recall",
-        _ratio(experiment_tp, experiment_tp + experiment_fn),
-    )
-    baseline_fdr = _metric_value(
-        baseline,
-        "fdr",
-        _ratio(baseline_fp, baseline_fp + baseline_tp),
-    )
-    experiment_fdr = _metric_value(
-        experiment,
-        "fdr",
-        _ratio(experiment_fp, experiment_fp + experiment_tp),
-    )
+    baseline_recall = _metric_value(baseline, "recall")
+    experiment_recall = _metric_value(experiment, "recall")
+    baseline_fdr = _metric_value(baseline, "fdr")
+    experiment_fdr = _metric_value(experiment, "fdr")
 
     return {
         "baseline_tp": baseline_tp,
@@ -146,24 +145,24 @@ def _metric_block(
     }
 
 
+def _validate_metric_object(metrics: Mapping[str, object], label: str) -> None:
+    for key in REQUIRED_METRIC_KEYS:
+        if key not in metrics:
+            raise ValueError(f"{label} missing required metric {key!r}")
+
+
 def _count(metrics: Mapping[str, object], key: str) -> int:
-    value = metrics.get(key, 0)
+    value = metrics[key]
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"metric {key!r} must be an integer")
     return value
 
 
-def _metric_value(metrics: Mapping[str, object], key: str, fallback: float) -> float:
-    value = metrics.get(key, fallback)
+def _metric_value(metrics: Mapping[str, object], key: str) -> float:
+    value = metrics[key]
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise ValueError(f"metric {key!r} must be numeric")
     return _stable_float(value)
-
-
-def _ratio(numerator: int, denominator: int) -> float:
-    if denominator == 0:
-        return 0.0
-    return numerator / denominator
 
 
 def _stable_float(value: int | float) -> float:
@@ -174,21 +173,28 @@ def _benchmark_block(
     baseline: Mapping[str, object],
     experiment: Mapping[str, object],
 ) -> dict[str, float]:
+    baseline_keys = set(baseline)
+    experiment_keys = set(experiment)
+    if baseline_keys != experiment_keys:
+        baseline_only = ", ".join(sorted(str(key) for key in baseline_keys - experiment_keys))
+        experiment_only = ", ".join(sorted(str(key) for key in experiment_keys - baseline_keys))
+        raise ValueError(
+            "benchmark keys differ"
+            f" (baseline only: {baseline_only or 'none'}; "
+            f"experiment only: {experiment_only or 'none'})"
+        )
+
     block: dict[str, float] = {}
-    for key in sorted(set(baseline) | set(experiment)):
-        baseline_value = _optional_number(baseline.get(key), f"baseline benchmark {key!r}")
-        experiment_value = _optional_number(experiment.get(key), f"experiment benchmark {key!r}")
-        if baseline_value is None or experiment_value is None:
-            continue
+    for key in sorted(baseline_keys):
+        baseline_value = _number(baseline[key], f"baseline benchmark {key!r}")
+        experiment_value = _number(experiment[key], f"experiment benchmark {key!r}")
         block[f"baseline_{key}"] = baseline_value
         block[f"experiment_{key}"] = experiment_value
         block[f"{key}_delta"] = _stable_float(experiment_value - baseline_value)
     return block
 
 
-def _optional_number(value: object, label: str) -> float | None:
-    if value is None:
-        return None
+def _number(value: object, label: str) -> float:
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise ValueError(f"{label} must be numeric")
     return _stable_float(value)
@@ -206,7 +212,7 @@ def _render_markdown(comparison: Mapping[str, object]) -> str:
     ]
     lines.extend(_metrics_table(["Overall"], {"Overall": comparison["overall"]}))
     lines.extend(["", "## Coarse Groups", ""])
-    lines.extend(_metrics_table(["Group"], _as_mapping(comparison["coarse_groups"])))
+    lines.extend(_metrics_table(["Group"], _as_mapping(comparison["coarse"])))
     lines.extend(["", "## Fine Watchlist", ""])
     lines.extend(_metrics_table(["Class"], _as_mapping(comparison["fine_watchlist"])))
     if "benchmark" in comparison:

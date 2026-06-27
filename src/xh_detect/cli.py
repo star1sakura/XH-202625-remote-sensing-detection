@@ -386,15 +386,18 @@ def compare_experiments_command(
         typer.Option(exists=True, dir_okay=False),
     ] = None,
 ) -> None:
-    comparison = compare_experiments(
-        baseline_report=baseline_report,
-        experiment_report=experiment_report,
-        output_dir=output_dir,
-        baseline_name=baseline_name,
-        experiment_name=experiment_name,
-        baseline_benchmark=baseline_benchmark,
-        experiment_benchmark=experiment_benchmark,
-    )
+    try:
+        comparison = compare_experiments(
+            baseline_report=baseline_report,
+            experiment_report=experiment_report,
+            output_dir=output_dir,
+            baseline_name=baseline_name,
+            experiment_name=experiment_name,
+            baseline_benchmark=baseline_benchmark,
+            experiment_benchmark=experiment_benchmark,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
     typer.echo(json.dumps(comparison["overall"], ensure_ascii=False, allow_nan=False))
 
 
