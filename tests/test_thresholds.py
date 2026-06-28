@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -270,8 +271,10 @@ def test_load_report_objective_rejects_bad_counts(
     ("metric", "value"),
     [
         ("recall", "0.8"),
+        ("recall", 2.0),
         ("fdr", True),
         ("fdr", math.nan),
+        ("fdr", -0.5),
     ],
 )
 def test_load_report_objective_rejects_bad_metrics(
@@ -508,6 +511,69 @@ def test_write_threshold_artifacts_returns_comparison_paths_when_baseline_provid
     assert artifacts["comparison_md"] == tmp_path / "artifacts" / "comparison.md"
     assert artifacts["comparison_json"].is_file()
     assert artifacts["comparison_md"].is_file()
+
+
+def test_write_threshold_artifacts_uses_baseline_report_in_summary(
+    tmp_path: Path,
+) -> None:
+    taxonomy = get_taxonomy("legacy3")
+    result = optimize_thresholds(
+        [Detection("img", 1, 0.90, BOX)],
+        [ObjectAnnotation("img", 1, BOX)],
+        taxonomy=taxonomy,
+        thresholds=(0.20, 0.50),
+    )
+    stale_baseline = ObjectiveScore(
+        f1=f1_score(recall=0.25, fdr=0.25),
+        precision=0.75,
+        recall=0.25,
+        fdr=0.25,
+        tp=1,
+        fp=1,
+        fn=3,
+    )
+    result = replace(result, baseline_objective=stale_baseline)
+    baseline_report = tmp_path / "baseline.json"
+    baseline_report.write_text(
+        json.dumps(
+            {
+                "overall_class_agnostic": {
+                    "tp": 1,
+                    "fp": 0,
+                    "fn": 0,
+                    "recall": 1.0,
+                    "fdr": 0.0,
+                },
+                "by_coarse_class": {
+                    "aircraft": {"tp": 0, "fp": 0, "fn": 0, "recall": 0.0, "fdr": 0.0},
+                    "ship": {"tp": 1, "fp": 0, "fn": 0, "recall": 1.0, "fdr": 0.0},
+                    "vehicle": {"tp": 0, "fp": 0, "fn": 0, "recall": 0.0, "fdr": 0.0},
+                },
+                "by_fine_class": {
+                    "0": {"tp": 0, "fp": 0, "fn": 0, "recall": 0.0, "fdr": 0.0},
+                    "1": {"tp": 1, "fp": 0, "fn": 0, "recall": 1.0, "fdr": 0.0},
+                    "2": {"tp": 0, "fp": 0, "fn": 0, "recall": 0.0, "fdr": 0.0},
+                },
+                "by_image": {
+                    "img": {"tp": 1, "fp": 0, "fn": 0, "recall": 1.0, "fdr": 0.0}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    write_threshold_artifacts(
+        result,
+        output_dir=tmp_path / "artifacts",
+        taxonomy=taxonomy,
+        experiment_name="unit-thresholds",
+        baseline_report=baseline_report,
+    )
+
+    summary = json.loads(
+        (tmp_path / "artifacts" / "search-summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["baseline_objective"]["recall"] == 1.0
 
 
 @pytest.mark.parametrize("recall_floor_delta", [True, "0.1", object()])

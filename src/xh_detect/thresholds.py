@@ -221,6 +221,13 @@ def _report_metric(metrics: Mapping[str, object], key: str, label: str) -> float
     return metric
 
 
+def _report_probability_metric(metrics: Mapping[str, object], key: str, label: str) -> float:
+    metric = _report_metric(metrics, key, label)
+    if not 0.0 <= metric <= 1.0:
+        raise ValueError(f"{label} metric {key!r} must be in [0, 1]")
+    return metric
+
+
 def load_report_objective(path: Path | str) -> ObjectiveScore:
     report_path = Path(path)
     report = _load_report_json_object(report_path, "report")
@@ -228,8 +235,8 @@ def load_report_objective(path: Path | str) -> ObjectiveScore:
     tp = _report_count(metrics, "tp", "overall_class_agnostic")
     fp = _report_count(metrics, "fp", "overall_class_agnostic")
     fn = _report_count(metrics, "fn", "overall_class_agnostic")
-    recall = _report_metric(metrics, "recall", "overall_class_agnostic")
-    fdr = _report_metric(metrics, "fdr", "overall_class_agnostic")
+    recall = _report_probability_metric(metrics, "recall", "overall_class_agnostic")
+    fdr = _report_probability_metric(metrics, "fdr", "overall_class_agnostic")
     precision = 1.0 - fdr
     return ObjectiveScore(
         f1=f1_score(recall=recall, fdr=fdr),
@@ -401,9 +408,11 @@ def write_threshold_artifacts(
     report_payload = report_to_dict(result.report)
     _write_json_artifact(report_path, report_payload)
 
-    baseline_objective = result.baseline_objective
-    if baseline_objective is None and baseline_report is not None:
-        baseline_objective = load_report_objective(baseline_report)
+    baseline_objective = (
+        load_report_objective(baseline_report)
+        if baseline_report is not None
+        else result.baseline_objective
+    )
 
     summary_payload: dict[str, object] = {
         "experiment_name": experiment_name,
