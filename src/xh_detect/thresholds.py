@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from numbers import Integral, Real
+from pathlib import Path
 
-from xh_detect.evaluator import EvaluationReport, evaluate
+import yaml
+
+from xh_detect.compare import compare_experiments
+from xh_detect.evaluator import EvaluationReport, evaluate, report_to_dict
 from xh_detect.taxonomy import Taxonomy
 from xh_detect.types import Detection, ObjectAnnotation
 
@@ -171,6 +176,279 @@ def _objective_dict(objective: ObjectiveScore) -> dict[str, float | int]:
         "fp": objective.fp,
         "fn": objective.fn,
     }
+
+
+def _load_report_json_object(path: Path, label: str) -> dict[str, object]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid {label} JSON: {exc.msg}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"{label} JSON root must be an object")
+    return payload
+
+
+def _metric_section(report: Mapping[str, object], key: str, label: str) -> Mapping[str, object]:
+    value = report.get(key)
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{label} must contain object field {key!r}")
+    return value
+
+
+def _required_metric(metrics: Mapping[str, object], key: str, label: str) -> object:
+    if key not in metrics:
+        raise ValueError(f"{label} missing required metric {key!r}")
+    return metrics[key]
+
+
+def _report_count(metrics: Mapping[str, object], key: str, label: str) -> int:
+    value = _required_metric(metrics, key, label)
+    if isinstance(value, bool) or not isinstance(value, Integral):
+        raise ValueError(f"{label} metric {key!r} must be a non-negative integer")
+    count = int(value)
+    if count < 0:
+        raise ValueError(f"{label} metric {key!r} must be a non-negative integer")
+    return count
+
+
+def _report_metric(metrics: Mapping[str, object], key: str, label: str) -> float:
+    value = _required_metric(metrics, key, label)
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(f"{label} metric {key!r} must be finite numeric")
+    metric = float(value)
+    if not math.isfinite(metric):
+        raise ValueError(f"{label} metric {key!r} must be finite numeric")
+    return metric
+
+
+def load_report_objective(path: Path | str) -> ObjectiveScore:
+    report_path = Path(path)
+    report = _load_report_json_object(report_path, "report")
+    metrics = _metric_section(report, "overall_class_agnostic", "report")
+    tp = _report_count(metrics, "tp", "overall_class_agnostic")
+    fp = _report_count(metrics, "fp", "overall_class_agnostic")
+    fn = _report_count(metrics, "fn", "overall_class_agnostic")
+    recall = _report_metric(metrics, "recall", "overall_class_agnostic")
+    fdr = _report_metric(metrics, "fdr", "overall_class_agnostic")
+    precision = 1.0 - fdr
+    return ObjectiveScore(
+        f1=f1_score(recall=recall, fdr=fdr),
+        precision=precision,
+        recall=recall,
+        fdr=fdr,
+        tp=tp,
+        fp=fp,
+        fn=fn,
+    )
+
+
+def _json_primitive(value: object) -> object:
+    if value is None or isinstance(value, str | bool | int):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("JSON artifact values must be finite")
+        return value
+    if isinstance(value, Mapping):
+        return {str(key): _json_primitive(item) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
+        return [_json_primitive(item) for item in value]
+    raise TypeError(f"JSON artifact value is not serializable: {type(value).__name__}")
+
+
+def _write_json_artifact(path: Path, payload: Mapping[str, object]) -> None:
+    path.write_text(
+        json.dumps(_json_primitive(payload), ensure_ascii=False, indent=2, allow_nan=False),
+        encoding="utf-8",
+    )
+
+
+def _format_number(value: object) -> str:
+    if isinstance(value, float):
+        text = f"{value:.6f}".rstrip("0").rstrip(".")
+        return text or "0"
+    return str(value)
+
+
+def _metrics_markdown_row(label: str, objective: ObjectiveScore) -> str:
+    return (
+        f"| {label} | {_format_number(objective.f1)} | "
+        f"{_format_number(objective.precision)} | {_format_number(objective.recall)} | "
+        f"{_format_number(objective.fdr)} | {objective.tp} | {objective.fp} | {objective.fn} |"
+    )
+
+
+def _metric_mapping_row(label: str, metrics: Mapping[str, object]) -> str:
+    return (
+        f"| {label} | {_format_number(metrics['recall'])} | "
+        f"{_format_number(metrics['fdr'])} | {metrics['tp']} | {metrics['fp']} | "
+        f"{metrics['fn']} |"
+    )
+
+
+def _recommendation(result: ThresholdOptimizationResult, baseline: ObjectiveScore | None) -> str:
+    if result.recall_floor is not None and result.objective.recall < result.recall_floor:
+        return "Review before adoption: no candidate satisfied the configured recall floor."
+    if baseline is None:
+        return (
+            "Use these thresholds as the optimized candidate and compare against a "
+            "baseline report."
+        )
+    if is_better_objective(result.objective, baseline):
+        return "Adopt the optimized thresholds for validation against the next benchmark run."
+    return "Review before adoption: the optimized objective did not improve over the baseline."
+
+
+def _render_search_summary_markdown(
+    result: ThresholdOptimizationResult,
+    *,
+    taxonomy: Taxonomy,
+    experiment_name: str,
+    baseline_objective: ObjectiveScore | None,
+) -> str:
+    report = report_to_dict(result.report)
+    lines = [
+        "# Threshold Optimization Summary",
+        "",
+        f"- Experiment: {experiment_name}",
+        f"- Global threshold: {_format_number(result.global_threshold)}",
+        f"- Grid: {', '.join(_format_number(threshold) for threshold in result.grid)}",
+        (
+            f"- Recall floor: {_format_number(result.recall_floor)}"
+            if result.recall_floor is not None
+            else "- Recall floor: none"
+        ),
+        "",
+        "## Overall Metrics",
+        "",
+        "| Run | F1 | Precision | Recall | FDR | TP | FP | FN |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    if baseline_objective is not None:
+        lines.append(_metrics_markdown_row("Baseline", baseline_objective))
+    lines.extend(
+        [
+            _metrics_markdown_row("Optimized", result.objective),
+            "",
+            "## Thresholds By Coarse Class",
+            "",
+            "| Coarse class | Class ID | Class name | Threshold |",
+            "| --- | ---: | --- | ---: |",
+        ]
+    )
+
+    for class_id, threshold in sorted(
+        result.thresholds.items(),
+        key=lambda item: (taxonomy.coarse_name(item[0]), item[0]),
+    ):
+        lines.append(
+            f"| {taxonomy.coarse_name(class_id)} | {class_id} | {taxonomy.names[class_id]} | "
+            f"{_format_number(threshold)} |"
+        )
+
+    coarse_metrics = report.get("by_coarse_class")
+    if isinstance(coarse_metrics, Mapping) and isinstance(coarse_metrics.get("ship"), Mapping):
+        lines.extend(
+            [
+                "",
+                "## Ship Check",
+                "",
+                "| Coarse class | Recall | FDR | TP | FP | FN |",
+                "| --- | ---: | ---: | ---: | ---: | ---: |",
+                _metric_mapping_row("ship", coarse_metrics["ship"]),
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Recommendation",
+            "",
+            _recommendation(result, baseline_objective),
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def write_threshold_artifacts(
+    result: ThresholdOptimizationResult,
+    *,
+    output_dir: Path,
+    taxonomy: Taxonomy,
+    experiment_name: str,
+    baseline_report: Path | None = None,
+    baseline_name: str = "xh25-yolo26s-e80",
+) -> dict[str, Path]:
+    target_dir = Path(output_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    thresholds_path = target_dir / "optimized-thresholds.yaml"
+    report_path = target_dir / "report.json"
+    summary_json_path = target_dir / "search-summary.json"
+    summary_md_path = target_dir / "search-summary.md"
+
+    thresholds_payload = {
+        "class_thresholds": {
+            class_id: result.thresholds[class_id] for class_id in sorted(result.thresholds)
+        }
+    }
+    thresholds_path.write_text(
+        yaml.safe_dump(thresholds_payload, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    report_payload = report_to_dict(result.report)
+    _write_json_artifact(report_path, report_payload)
+
+    baseline_objective = result.baseline_objective
+    if baseline_objective is None and baseline_report is not None:
+        baseline_objective = load_report_objective(baseline_report)
+
+    summary_payload: dict[str, object] = {
+        "experiment_name": experiment_name,
+        "global_threshold": result.global_threshold,
+        "grid": result.grid,
+        "recall_floor": result.recall_floor,
+        "objective": _objective_dict(result.objective),
+        "baseline_objective": (
+            _objective_dict(baseline_objective) if baseline_objective is not None else None
+        ),
+        "thresholds": {
+            str(class_id): result.thresholds[class_id] for class_id in sorted(result.thresholds)
+        },
+        "candidates": list(result.candidates),
+    }
+    _write_json_artifact(summary_json_path, summary_payload)
+    summary_md_path.write_text(
+        _render_search_summary_markdown(
+            result,
+            taxonomy=taxonomy,
+            experiment_name=experiment_name,
+            baseline_objective=baseline_objective,
+        ),
+        encoding="utf-8",
+    )
+
+    artifacts = {
+        "thresholds": thresholds_path,
+        "report": report_path,
+        "search_summary_json": summary_json_path,
+        "search_summary_md": summary_md_path,
+    }
+
+    if baseline_report is not None:
+        compare_experiments(
+            baseline_report=Path(baseline_report),
+            experiment_report=report_path,
+            output_dir=target_dir,
+            baseline_name=baseline_name,
+            experiment_name=experiment_name,
+        )
+        artifacts["comparison_json"] = target_dir / "comparison.json"
+        artifacts["comparison_md"] = target_dir / "comparison.md"
+
+    return artifacts
 
 
 def is_better_objective(

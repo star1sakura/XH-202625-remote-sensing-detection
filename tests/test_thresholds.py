@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import math
+from pathlib import Path
 
 import pytest
+import yaml
 
 from xh_detect.evaluator import EvaluationReport, Metrics
 from xh_detect.taxonomy import get_taxonomy
@@ -14,10 +16,12 @@ from xh_detect.thresholds import (
     f1_score,
     filter_predictions_by_class_threshold,
     is_better_objective,
+    load_report_objective,
     objective_from_report,
     optimize_thresholds,
     parse_threshold_grid,
     validate_threshold_map,
+    write_threshold_artifacts,
 )
 from xh_detect.types import Detection, ObjectAnnotation
 
@@ -193,6 +197,105 @@ def test_objective_from_report_computes_precision_recall_fdr_and_f1() -> None:
     assert f1_score(recall=0.0, fdr=1.0) == 0.0
 
 
+def test_load_report_objective_reads_existing_evaluation_report(tmp_path: Path) -> None:
+    report_path = tmp_path / "baseline.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "overall_class_agnostic": {
+                    "tp": 8,
+                    "fp": 2,
+                    "fn": 2,
+                    "recall": 0.8,
+                    "fdr": 0.2,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    objective = load_report_objective(report_path)
+
+    assert objective.f1 == pytest.approx(0.8)
+    assert objective.tp == 8
+
+
+def test_load_report_objective_rejects_non_object_root(tmp_path: Path) -> None:
+    report_path = tmp_path / "bad.json"
+    report_path.write_text("[]", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="JSON root must be an object"):
+        load_report_objective(report_path)
+
+
+def test_load_report_objective_rejects_missing_overall_metrics(tmp_path: Path) -> None:
+    report_path = tmp_path / "bad.json"
+    report_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="overall_class_agnostic"):
+        load_report_objective(report_path)
+
+
+@pytest.mark.parametrize(
+    ("metric", "value"),
+    [
+        ("tp", -1),
+        ("fp", 1.5),
+        ("fn", True),
+    ],
+)
+def test_load_report_objective_rejects_bad_counts(
+    tmp_path: Path,
+    metric: str,
+    value: object,
+) -> None:
+    payload = {
+        "overall_class_agnostic": {
+            "tp": 8,
+            "fp": 2,
+            "fn": 2,
+            "recall": 0.8,
+            "fdr": 0.2,
+        }
+    }
+    payload["overall_class_agnostic"][metric] = value
+    report_path = tmp_path / "bad.json"
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=metric):
+        load_report_objective(report_path)
+
+
+@pytest.mark.parametrize(
+    ("metric", "value"),
+    [
+        ("recall", "0.8"),
+        ("fdr", True),
+        ("fdr", math.nan),
+    ],
+)
+def test_load_report_objective_rejects_bad_metrics(
+    tmp_path: Path,
+    metric: str,
+    value: object,
+) -> None:
+    payload = {
+        "overall_class_agnostic": {
+            "tp": 8,
+            "fp": 2,
+            "fn": 2,
+            "recall": 0.8,
+            "fdr": 0.2,
+        }
+    }
+    payload["overall_class_agnostic"][metric] = value
+    report_path = tmp_path / "bad.json"
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=metric):
+        load_report_objective(report_path)
+
+
 def test_is_better_objective_prefers_f1_then_lower_fdr_then_higher_recall() -> None:
     incumbent = ObjectiveScore(f1=0.90, precision=0.90, recall=0.90, fdr=0.10, tp=9, fp=1, fn=1)
 
@@ -315,6 +418,96 @@ def test_optimize_thresholds_recall_floor_rejects_high_f1_low_recall_candidate()
     assert result.recall_floor == 1.0
     assert result.thresholds[0] == 0.20
     assert result.report.overall_class_agnostic.recall == 1.0
+
+
+def test_write_threshold_artifacts_writes_yaml_json_and_markdown(tmp_path: Path) -> None:
+    taxonomy = get_taxonomy("legacy3")
+    truth = [ObjectAnnotation("img", 0, BOX)]
+    predictions = [
+        Detection("img", 0, 0.90, BOX),
+        Detection("fp", 0, 0.20, BOX),
+    ]
+    result = optimize_thresholds(
+        predictions,
+        truth,
+        taxonomy=taxonomy,
+        thresholds=(0.20, 0.50),
+    )
+
+    artifacts = write_threshold_artifacts(
+        result,
+        output_dir=tmp_path,
+        taxonomy=taxonomy,
+        experiment_name="unit-thresholds",
+    )
+
+    thresholds_yaml = yaml.safe_load(
+        (tmp_path / "optimized-thresholds.yaml").read_text(encoding="utf-8")
+    )
+    report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    summary = json.loads((tmp_path / "search-summary.json").read_text(encoding="utf-8"))
+    markdown = (tmp_path / "search-summary.md").read_text(encoding="utf-8")
+
+    assert artifacts["report"] == tmp_path / "report.json"
+    assert thresholds_yaml["class_thresholds"][0] == 0.5
+    assert report["overall_class_agnostic"]["tp"] == 1
+    assert summary["experiment_name"] == "unit-thresholds"
+    assert summary["thresholds"]["0"] == 0.5
+    assert "| ship |" in markdown
+    assert "Recommendation" in markdown
+
+
+def test_write_threshold_artifacts_returns_comparison_paths_when_baseline_provided(
+    tmp_path: Path,
+) -> None:
+    taxonomy = get_taxonomy("legacy3")
+    result = optimize_thresholds(
+        [Detection("img", 1, 0.90, BOX)],
+        [ObjectAnnotation("img", 1, BOX)],
+        taxonomy=taxonomy,
+        thresholds=(0.20, 0.50),
+    )
+    baseline_report = tmp_path / "baseline.json"
+    baseline_report.write_text(
+        json.dumps(
+            {
+                "overall_class_agnostic": {
+                    "tp": 0,
+                    "fp": 0,
+                    "fn": 1,
+                    "recall": 0.0,
+                    "fdr": 0.0,
+                },
+                "by_coarse_class": {
+                    "aircraft": {"tp": 0, "fp": 0, "fn": 0, "recall": 0.0, "fdr": 0.0},
+                    "ship": {"tp": 0, "fp": 0, "fn": 1, "recall": 0.0, "fdr": 0.0},
+                    "vehicle": {"tp": 0, "fp": 0, "fn": 0, "recall": 0.0, "fdr": 0.0},
+                },
+                "by_fine_class": {
+                    "0": {"tp": 0, "fp": 0, "fn": 0, "recall": 0.0, "fdr": 0.0},
+                    "1": {"tp": 0, "fp": 0, "fn": 1, "recall": 0.0, "fdr": 0.0},
+                    "2": {"tp": 0, "fp": 0, "fn": 0, "recall": 0.0, "fdr": 0.0},
+                },
+                "by_image": {
+                    "img": {"tp": 0, "fp": 0, "fn": 1, "recall": 0.0, "fdr": 0.0}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    artifacts = write_threshold_artifacts(
+        result,
+        output_dir=tmp_path / "artifacts",
+        taxonomy=taxonomy,
+        experiment_name="unit-thresholds",
+        baseline_report=baseline_report,
+    )
+
+    assert artifacts["comparison_json"] == tmp_path / "artifacts" / "comparison.json"
+    assert artifacts["comparison_md"] == tmp_path / "artifacts" / "comparison.md"
+    assert artifacts["comparison_json"].is_file()
+    assert artifacts["comparison_md"].is_file()
 
 
 @pytest.mark.parametrize("recall_floor_delta", [True, "0.1", object()])
