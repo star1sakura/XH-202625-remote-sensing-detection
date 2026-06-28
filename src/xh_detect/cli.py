@@ -402,9 +402,7 @@ def optimize_thresholds_command(
         predictions = load_coco_predictions(predictions_json, taxonomy=taxonomy_object)
         truth = load_coco_ground_truth(ground_truth_json, taxonomy=taxonomy_object)
         baseline_objective = (
-            load_report_objective(resolved_baseline)
-            if resolved_baseline is not None
-            else None
+            load_report_objective(resolved_baseline) if resolved_baseline is not None else None
         )
         result = optimize_thresholds_search(
             predictions,

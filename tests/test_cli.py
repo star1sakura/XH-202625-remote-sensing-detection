@@ -452,6 +452,64 @@ def test_optimize_thresholds_command_forwards_options(
     )
 
 
+@patch("xh_detect.cli.write_threshold_artifacts")
+@patch("xh_detect.cli.optimize_thresholds_search")
+@patch("xh_detect.cli.load_report_objective")
+@patch("xh_detect.cli.load_coco_ground_truth", return_value=["truth"])
+@patch("xh_detect.cli.load_coco_predictions", return_value=["prediction"])
+def test_optimize_thresholds_command_uses_default_baseline_report(
+    load_predictions: Mock,
+    load_truth: Mock,
+    load_report_objective: Mock,
+    optimize_thresholds_search: Mock,
+    write_threshold_artifacts: Mock,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    predictions = tmp_path / "predictions.json"
+    truth = tmp_path / "truth.json"
+    default_baseline = Path("outputs/xh25/baseline/report.json")
+    baseline_path = tmp_path / default_baseline
+    output = tmp_path / "threshold-optimized"
+    predictions.write_text("[]", encoding="utf-8")
+    truth.write_text('{"annotations":[]}', encoding="utf-8")
+    baseline_path.parent.mkdir(parents=True)
+    baseline_path.write_text("{}", encoding="utf-8")
+    baseline_objective = object()
+    optimized_result = object()
+    load_report_objective.return_value = baseline_objective
+    optimize_thresholds_search.return_value = optimized_result
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "optimize-thresholds",
+            "--predictions-json",
+            str(predictions),
+            "--ground-truth-json",
+            str(truth),
+            "--output-dir",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    taxonomy = get_taxonomy("xh25")
+    load_predictions.assert_called_once_with(predictions, taxonomy=taxonomy)
+    load_truth.assert_called_once_with(truth, taxonomy=taxonomy)
+    load_report_objective.assert_called_once_with(default_baseline)
+    optimize_thresholds_search.assert_called_once()
+    assert optimize_thresholds_search.call_args.kwargs["baseline_objective"] is baseline_objective
+    write_threshold_artifacts.assert_called_once_with(
+        optimized_result,
+        output_dir=output,
+        taxonomy=taxonomy,
+        experiment_name="xh25-mksnet-lite-threshold-optimized",
+        baseline_report=default_baseline,
+    )
+
+
 def test_optimize_thresholds_command_reports_invalid_threshold_grid(tmp_path: Path) -> None:
     predictions = tmp_path / "predictions.json"
     truth = tmp_path / "truth.json"
