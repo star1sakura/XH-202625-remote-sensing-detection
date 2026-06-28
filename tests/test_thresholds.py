@@ -299,6 +299,32 @@ def test_load_report_objective_rejects_bad_metrics(
         load_report_objective(report_path)
 
 
+@pytest.mark.parametrize(
+    ("metric", "value"),
+    [("recall", 1.0), ("fdr", 0.5)],
+)
+def test_load_report_objective_rejects_metrics_inconsistent_with_counts(
+    tmp_path: Path,
+    metric: str,
+    value: float,
+) -> None:
+    payload = {
+        "overall_class_agnostic": {
+            "tp": 8,
+            "fp": 2,
+            "fn": 2,
+            "recall": 0.8,
+            "fdr": 0.2,
+        }
+    }
+    payload["overall_class_agnostic"][metric] = value
+    report_path = tmp_path / "bad.json"
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=metric):
+        load_report_objective(report_path)
+
+
 def test_is_better_objective_prefers_f1_then_lower_fdr_then_higher_recall() -> None:
     incumbent = ObjectiveScore(f1=0.90, precision=0.90, recall=0.90, fdr=0.10, tp=9, fp=1, fn=1)
 

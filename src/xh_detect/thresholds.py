@@ -31,6 +31,7 @@ DEFAULT_THRESHOLD_GRID: tuple[float, ...] = (
     0.70,
 )
 DEFAULT_THRESHOLD_GRID_TEXT = ",".join(f"{threshold:.2f}" for threshold in DEFAULT_THRESHOLD_GRID)
+_REPORT_METRIC_TOLERANCE = 1e-9
 
 
 @dataclass(frozen=True)
@@ -228,6 +229,21 @@ def _report_probability_metric(metrics: Mapping[str, object], key: str, label: s
     return metric
 
 
+def _validate_report_metric_consistency(
+    metric_name: str,
+    loaded_value: float,
+    expected_value: float,
+    label: str,
+) -> None:
+    if not math.isclose(
+        loaded_value,
+        expected_value,
+        rel_tol=0.0,
+        abs_tol=_REPORT_METRIC_TOLERANCE,
+    ):
+        raise ValueError(f"{label} metric {metric_name!r} is inconsistent with counts")
+
+
 def load_report_objective(path: Path | str) -> ObjectiveScore:
     report_path = Path(path)
     report = _load_report_json_object(report_path, "report")
@@ -237,6 +253,20 @@ def load_report_objective(path: Path | str) -> ObjectiveScore:
     fn = _report_count(metrics, "fn", "overall_class_agnostic")
     recall = _report_probability_metric(metrics, "recall", "overall_class_agnostic")
     fdr = _report_probability_metric(metrics, "fdr", "overall_class_agnostic")
+    expected_recall = tp / (tp + fn) if tp + fn > 0 else 0.0
+    expected_fdr = fp / (fp + tp) if fp + tp > 0 else 0.0
+    _validate_report_metric_consistency(
+        "recall",
+        loaded_value=recall,
+        expected_value=expected_recall,
+        label="overall_class_agnostic",
+    )
+    _validate_report_metric_consistency(
+        "fdr",
+        loaded_value=fdr,
+        expected_value=expected_fdr,
+        label="overall_class_agnostic",
+    )
     precision = 1.0 - fdr
     return ObjectiveScore(
         f1=f1_score(recall=recall, fdr=fdr),
