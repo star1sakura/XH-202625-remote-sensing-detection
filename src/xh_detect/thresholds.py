@@ -96,13 +96,16 @@ def validate_threshold_map(
     if not isinstance(thresholds, Mapping):
         raise TypeError("thresholds must be a mapping")
 
-    return {
-        _class_id_from_key(class_id, taxonomy): _validate_threshold(
+    validated_thresholds: dict[int, float] = {}
+    for raw_class_id, threshold in thresholds.items():
+        class_id = _class_id_from_key(raw_class_id, taxonomy)
+        if class_id in validated_thresholds:
+            raise ValueError(f"duplicate class ID: {class_id}")
+        validated_thresholds[class_id] = _validate_threshold(
             threshold,
-            f"class {class_id!r}",
+            f"class {raw_class_id!r}",
         )
-        for class_id, threshold in thresholds.items()
-    }
+    return validated_thresholds
 
 
 def filter_predictions_by_class_threshold(

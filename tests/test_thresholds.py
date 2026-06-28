@@ -64,6 +64,11 @@ def test_validate_threshold_map_rejects_invalid_class_ids_and_values() -> None:
         validate_threshold_map({0: math.nan}, taxonomy)
 
 
+def test_validate_threshold_map_rejects_duplicate_normalized_class_ids() -> None:
+    with pytest.raises(ValueError, match="duplicate class ID"):
+        validate_threshold_map({0: 0.25, "0": 0.70}, get_taxonomy("legacy3"))
+
+
 def test_filter_predictions_uses_class_specific_thresholds_inclusively() -> None:
     predictions = [
         Detection("img", 0, 0.50, BOX),
