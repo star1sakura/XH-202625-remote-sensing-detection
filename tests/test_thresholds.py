@@ -22,6 +22,25 @@ from xh_detect.types import Detection
 BOX = ((0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0))
 
 
+def test_default_threshold_grid_matches_specification() -> None:
+    assert DEFAULT_THRESHOLD_GRID == (
+        0.05,
+        0.10,
+        0.15,
+        0.20,
+        0.25,
+        0.30,
+        0.35,
+        0.40,
+        0.45,
+        0.50,
+        0.55,
+        0.60,
+        0.65,
+        0.70,
+    )
+
+
 def _report(tp: int, fp: int, fn: int) -> EvaluationReport:
     metrics = Metrics(tp, fp, fn)
     return EvaluationReport(
@@ -40,10 +59,35 @@ def test_parse_threshold_grid_returns_sorted_unique_values() -> None:
     assert parse_threshold_grid("0.30, 0.10,0.30,0.20") == [0.1, 0.2, 0.3]
 
 
-@pytest.mark.parametrize("grid", ["", "0.2,bad", "-0.1,0.2", "0.2,1.1", "nan", "inf"])
+@pytest.mark.parametrize(
+    "grid",
+    ["", "0.2,bad", "-0.1,0.2", "0.2,1.1", "nan", "inf", "0.1,,0.2"],
+)
 def test_parse_threshold_grid_rejects_invalid_values(grid: str) -> None:
     with pytest.raises(ValueError):
         parse_threshold_grid(grid)
+
+
+@pytest.mark.parametrize(
+    ("threshold", "error_type"),
+    [
+        (True, TypeError),
+        (False, TypeError),
+        ("0.2", TypeError),
+        (object(), TypeError),
+        (math.nan, ValueError),
+        (math.inf, ValueError),
+        (-math.inf, ValueError),
+        (-0.1, ValueError),
+        (1.1, ValueError),
+    ],
+)
+def test_parse_threshold_grid_rejects_invalid_sequence_values(
+    threshold: object,
+    error_type: type[Exception],
+) -> None:
+    with pytest.raises(error_type):
+        parse_threshold_grid([threshold])
 
 
 def test_parse_threshold_grid_rejects_empty_sequence() -> None:
@@ -51,17 +95,44 @@ def test_parse_threshold_grid_rejects_empty_sequence() -> None:
         parse_threshold_grid([])
 
 
-def test_validate_threshold_map_rejects_invalid_class_ids_and_values() -> None:
+def test_validate_threshold_map_accepts_integer_and_decimal_string_class_ids() -> None:
     taxonomy = get_taxonomy("legacy3")
 
     assert validate_threshold_map({0: 0.25, "1": 0.3}, taxonomy) == {0: 0.25, 1: 0.3}
 
+
+def test_validate_threshold_map_rejects_unknown_class_ids() -> None:
+    taxonomy = get_taxonomy("legacy3")
+
     with pytest.raises(ValueError, match="class ID"):
         validate_threshold_map({9: 0.25}, taxonomy)
-    with pytest.raises(TypeError, match="threshold"):
-        validate_threshold_map({0: True}, taxonomy)
-    with pytest.raises(ValueError, match="threshold"):
-        validate_threshold_map({0: math.nan}, taxonomy)
+
+
+@pytest.mark.parametrize("class_id", [True, False, 0.0, 1.5, "1.0", "ship"])
+def test_validate_threshold_map_rejects_non_integer_class_ids(class_id: object) -> None:
+    with pytest.raises(TypeError, match="class ID"):
+        validate_threshold_map({class_id: 0.25}, get_taxonomy("legacy3"))
+
+
+@pytest.mark.parametrize(
+    ("threshold", "error_type"),
+    [
+        (True, TypeError),
+        ("0.25", TypeError),
+        (None, TypeError),
+        (math.nan, ValueError),
+        (math.inf, ValueError),
+        (-math.inf, ValueError),
+        (-0.1, ValueError),
+        (1.1, ValueError),
+    ],
+)
+def test_validate_threshold_map_rejects_invalid_threshold_values(
+    threshold: object,
+    error_type: type[Exception],
+) -> None:
+    with pytest.raises(error_type, match="threshold"):
+        validate_threshold_map({0: threshold}, get_taxonomy("legacy3"))
 
 
 def test_validate_threshold_map_rejects_duplicate_normalized_class_ids() -> None:
@@ -84,6 +155,21 @@ def test_filter_predictions_uses_class_specific_thresholds_inclusively() -> None
     )
 
     assert filtered == [predictions[0], predictions[2]]
+
+
+def test_filter_predictions_uses_zero_threshold_for_missing_classes() -> None:
+    predictions = [
+        Detection("img", 0, 0.49, BOX),
+        Detection("img", 1, 0.00, BOX),
+    ]
+
+    filtered = filter_predictions_by_class_threshold(
+        predictions,
+        {0: 0.50},
+        taxonomy=get_taxonomy("legacy3"),
+    )
+
+    assert filtered == [predictions[1]]
 
 
 def test_objective_from_report_computes_precision_recall_fdr_and_f1() -> None:
