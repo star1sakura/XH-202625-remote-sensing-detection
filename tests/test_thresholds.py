@@ -517,9 +517,7 @@ def test_write_threshold_artifacts_returns_comparison_paths_when_baseline_provid
                     "1": {"tp": 0, "fp": 0, "fn": 1, "recall": 0.0, "fdr": 0.0},
                     "2": {"tp": 0, "fp": 0, "fn": 0, "recall": 0.0, "fdr": 0.0},
                 },
-                "by_image": {
-                    "img": {"tp": 0, "fp": 0, "fn": 1, "recall": 0.0, "fdr": 0.0}
-                },
+                "by_image": {"img": {"tp": 0, "fp": 0, "fn": 1, "recall": 0.0, "fdr": 0.0}},
             }
         ),
         encoding="utf-8",
@@ -580,9 +578,7 @@ def test_write_threshold_artifacts_uses_baseline_report_in_summary(
                     "1": {"tp": 1, "fp": 0, "fn": 0, "recall": 1.0, "fdr": 0.0},
                     "2": {"tp": 0, "fp": 0, "fn": 0, "recall": 0.0, "fdr": 0.0},
                 },
-                "by_image": {
-                    "img": {"tp": 1, "fp": 0, "fn": 0, "recall": 1.0, "fdr": 0.0}
-                },
+                "by_image": {"img": {"tp": 1, "fp": 0, "fn": 0, "recall": 1.0, "fdr": 0.0}},
             }
         ),
         encoding="utf-8",

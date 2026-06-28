@@ -328,8 +328,7 @@ def _recommendation(result: ThresholdOptimizationResult, baseline: ObjectiveScor
         return "Review before adoption: no candidate satisfied the configured recall floor."
     if baseline is None:
         return (
-            "Use these thresholds as the optimized candidate and compare against a "
-            "baseline report."
+            "Use these thresholds as the optimized candidate and compare against a baseline report."
         )
     if is_better_objective(result.objective, baseline):
         return "Adopt the optimized thresholds for validation against the next benchmark run."
