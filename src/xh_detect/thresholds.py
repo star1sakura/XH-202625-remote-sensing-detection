@@ -161,6 +161,18 @@ def objective_from_report(report: EvaluationReport) -> ObjectiveScore:
     )
 
 
+def _objective_dict(objective: ObjectiveScore) -> dict[str, float | int]:
+    return {
+        "f1": objective.f1,
+        "precision": objective.precision,
+        "recall": objective.recall,
+        "fdr": objective.fdr,
+        "tp": objective.tp,
+        "fp": objective.fp,
+        "fn": objective.fn,
+    }
+
+
 def is_better_objective(
     candidate: ObjectiveScore,
     incumbent: ObjectiveScore,
@@ -282,7 +294,7 @@ def optimize_thresholds(
             "stage": "global",
             "selected_threshold": best_global.threshold,
             "accepted": True,
-            "objective": best_global.objective,
+            "objective": _objective_dict(best_global.objective),
             "recall_floor_satisfied": _candidate_meets_recall_floor(
                 best_global,
                 recall_floor,
@@ -327,7 +339,7 @@ def optimize_thresholds(
                     "class_name": taxonomy.names[class_id],
                     "selected_threshold": selected.threshold,
                     "accepted": accepted,
-                    "objective": selected.objective,
+                    "objective": _objective_dict(selected.objective),
                     "recall_floor_satisfied": _candidate_meets_recall_floor(
                         selected,
                         recall_floor,

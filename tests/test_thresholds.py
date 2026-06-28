@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 
 import pytest
@@ -242,6 +243,39 @@ def test_optimize_thresholds_selects_different_thresholds_per_class() -> None:
     assert result.objective.f1 == pytest.approx(1.0)
     assert result.report.overall_class_agnostic == Metrics(tp=2, fp=0, fn=0)
     assert result.candidates[0]["stage"] == "global"
+
+
+def test_optimize_threshold_candidate_records_are_json_serializable() -> None:
+    result = optimize_thresholds(
+        [],
+        [],
+        taxonomy=get_taxonomy("legacy3"),
+        thresholds=(0.20, 0.50),
+    )
+
+    json.dumps(result.candidates, allow_nan=False)
+    assert isinstance(result.candidates[0]["objective"], dict)
+    assert set(result.candidates[0]["objective"]) == {
+        "f1",
+        "precision",
+        "recall",
+        "fdr",
+        "tp",
+        "fp",
+        "fn",
+    }
+
+
+def test_optimize_thresholds_keeps_first_sorted_threshold_on_exact_ties() -> None:
+    result = optimize_thresholds(
+        [],
+        [],
+        taxonomy=get_taxonomy("legacy3"),
+        thresholds=(0.50, 0.20),
+    )
+
+    assert result.grid == [0.20, 0.50]
+    assert result.global_threshold == 0.20
 
 
 def test_optimize_thresholds_recall_floor_rejects_high_f1_low_recall_candidate() -> None:
