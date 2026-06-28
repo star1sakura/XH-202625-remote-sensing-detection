@@ -30,6 +30,15 @@ from xh_detect.evaluator import (
 from xh_detect.exporters import export_coco_results
 from xh_detect.pipeline import InferencePipeline
 from xh_detect.taxonomy import get_taxonomy
+from xh_detect.thresholds import (
+    DEFAULT_THRESHOLD_GRID_TEXT,
+    load_report_objective,
+    parse_threshold_grid,
+    write_threshold_artifacts,
+)
+from xh_detect.thresholds import (
+    optimize_thresholds as optimize_thresholds_search,
+)
 from xh_detect.training import export_tensorrt, train_model
 from xh_detect.visualize import draw_detections
 
@@ -362,6 +371,60 @@ def sweep_thresholds_command(
     ]
     _write_json(output_path, payload)
     typer.echo(str(output_path))
+
+
+@app.command("optimize-thresholds")
+def optimize_thresholds_command(
+    predictions_json: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    ground_truth_json: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output_dir: Annotated[Path, typer.Option()] = Path(
+        "outputs/xh25/mksnet-lite/threshold-optimized"
+    ),
+    taxonomy: Annotated[str, typer.Option()] = "xh25",
+    baseline_report: Annotated[Path | None, typer.Option(dir_okay=False)] = None,
+    experiment_name: Annotated[str, typer.Option()] = "xh25-mksnet-lite-threshold-optimized",
+    thresholds: Annotated[str, typer.Option()] = DEFAULT_THRESHOLD_GRID_TEXT,
+    recall_floor_delta: Annotated[float, typer.Option(min=0.0)] = 0.003,
+    tie_epsilon: Annotated[float, typer.Option(min=0.0)] = 0.0005,
+) -> None:
+    default_baseline = Path("outputs/xh25/baseline/report.json")
+    resolved_baseline = (
+        default_baseline
+        if baseline_report is None and default_baseline.is_file()
+        else baseline_report
+    )
+    if resolved_baseline is not None and not resolved_baseline.is_file():
+        raise typer.BadParameter(f"baseline report does not exist: {resolved_baseline}")
+
+    try:
+        threshold_grid = parse_threshold_grid(thresholds)
+        taxonomy_object = get_taxonomy(taxonomy)
+        predictions = load_coco_predictions(predictions_json, taxonomy=taxonomy_object)
+        truth = load_coco_ground_truth(ground_truth_json, taxonomy=taxonomy_object)
+        baseline_objective = (
+            load_report_objective(resolved_baseline)
+            if resolved_baseline is not None
+            else None
+        )
+        result = optimize_thresholds_search(
+            predictions,
+            truth,
+            taxonomy=taxonomy_object,
+            thresholds=threshold_grid,
+            baseline_objective=baseline_objective,
+            recall_floor_delta=recall_floor_delta,
+            tie_epsilon=tie_epsilon,
+        )
+        write_threshold_artifacts(
+            result,
+            output_dir=output_dir,
+            taxonomy=taxonomy_object,
+            experiment_name=experiment_name,
+            baseline_report=resolved_baseline,
+        )
+    except (TypeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(str(output_dir / "report.json"))
 
 
 @app.command("compare-experiments")

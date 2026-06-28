@@ -378,6 +378,132 @@ def test_sweep_thresholds_command_writes_json(
     threshold_sweep.assert_called_once_with([], [], thresholds, taxonomy=taxonomy)
 
 
+@patch("xh_detect.cli.write_threshold_artifacts")
+@patch("xh_detect.cli.optimize_thresholds_search")
+@patch("xh_detect.cli.load_report_objective")
+@patch("xh_detect.cli.load_coco_ground_truth", return_value=["truth"])
+@patch("xh_detect.cli.load_coco_predictions", return_value=["prediction"])
+def test_optimize_thresholds_command_forwards_options(
+    load_predictions: Mock,
+    load_truth: Mock,
+    load_report_objective: Mock,
+    optimize_thresholds_search: Mock,
+    write_threshold_artifacts: Mock,
+    tmp_path: Path,
+) -> None:
+    predictions = tmp_path / "predictions.json"
+    truth = tmp_path / "truth.json"
+    baseline = tmp_path / "baseline-report.json"
+    output = tmp_path / "threshold-optimized"
+    predictions.write_text("[]", encoding="utf-8")
+    truth.write_text('{"annotations":[]}', encoding="utf-8")
+    baseline.write_text("{}", encoding="utf-8")
+    baseline_objective = object()
+    optimized_result = object()
+    load_report_objective.return_value = baseline_objective
+    optimize_thresholds_search.return_value = optimized_result
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "optimize-thresholds",
+            "--predictions-json",
+            str(predictions),
+            "--ground-truth-json",
+            str(truth),
+            "--output-dir",
+            str(output),
+            "--taxonomy",
+            "xh25",
+            "--baseline-report",
+            str(baseline),
+            "--experiment-name",
+            "unit-thresholds",
+            "--thresholds",
+            "0.5,0.2,0.5",
+            "--recall-floor-delta",
+            "0.01",
+            "--tie-epsilon",
+            "0.002",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.strip() == str(output / "report.json")
+    taxonomy = get_taxonomy("xh25")
+    load_predictions.assert_called_once_with(predictions, taxonomy=taxonomy)
+    load_truth.assert_called_once_with(truth, taxonomy=taxonomy)
+    load_report_objective.assert_called_once_with(baseline)
+    optimize_thresholds_search.assert_called_once_with(
+        ["prediction"],
+        ["truth"],
+        taxonomy=taxonomy,
+        thresholds=[0.2, 0.5],
+        baseline_objective=baseline_objective,
+        recall_floor_delta=0.01,
+        tie_epsilon=0.002,
+    )
+    write_threshold_artifacts.assert_called_once_with(
+        optimized_result,
+        output_dir=output,
+        taxonomy=taxonomy,
+        experiment_name="unit-thresholds",
+        baseline_report=baseline,
+    )
+
+
+def test_optimize_thresholds_command_reports_invalid_threshold_grid(tmp_path: Path) -> None:
+    predictions = tmp_path / "predictions.json"
+    truth = tmp_path / "truth.json"
+    output = tmp_path / "threshold-optimized"
+    predictions.write_text("[]", encoding="utf-8")
+    truth.write_text('{"annotations":[]}', encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "optimize-thresholds",
+            "--predictions-json",
+            str(predictions),
+            "--ground-truth-json",
+            str(truth),
+            "--output-dir",
+            str(output),
+            "--thresholds",
+            "0.25,bad",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "threshold grid value" in result.output or "invalid threshold value" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_optimize_thresholds_command_reports_missing_baseline_report(tmp_path: Path) -> None:
+    predictions = tmp_path / "predictions.json"
+    truth = tmp_path / "truth.json"
+    baseline = tmp_path / "missing-baseline.json"
+    predictions.write_text("[]", encoding="utf-8")
+    truth.write_text('{"annotations":[]}', encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "optimize-thresholds",
+            "--predictions-json",
+            str(predictions),
+            "--ground-truth-json",
+            str(truth),
+            "--baseline-report",
+            str(baseline),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "baseline report does not exist" in result.output
+    assert "Traceback" not in result.output
+
+
 def _minimal_comparison_report() -> dict[str, object]:
     return {
         "overall_class_agnostic": {
