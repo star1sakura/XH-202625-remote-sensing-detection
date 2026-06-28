@@ -14,10 +14,11 @@ from xh_detect.thresholds import (
     filter_predictions_by_class_threshold,
     is_better_objective,
     objective_from_report,
+    optimize_thresholds,
     parse_threshold_grid,
     validate_threshold_map,
 )
-from xh_detect.types import Detection
+from xh_detect.types import Detection, ObjectAnnotation
 
 BOX = ((0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0))
 
@@ -213,3 +214,130 @@ def test_is_better_objective_prefers_f1_then_lower_fdr_then_higher_recall() -> N
         incumbent,
         tie_epsilon=0.0005,
     )
+
+
+def test_optimize_thresholds_selects_different_thresholds_per_class() -> None:
+    taxonomy = get_taxonomy("legacy3")
+    truth = [
+        ObjectAnnotation("ship-ok", 0, BOX),
+        ObjectAnnotation("aircraft-low", 1, BOX),
+    ]
+    predictions = [
+        Detection("ship-ok", 0, 0.90, BOX),
+        Detection("ship-fp", 0, 0.20, BOX),
+        Detection("aircraft-low", 1, 0.20, BOX),
+    ]
+
+    result = optimize_thresholds(
+        predictions,
+        truth,
+        taxonomy=taxonomy,
+        thresholds=(0.20, 0.50),
+        passes=2,
+    )
+
+    assert result.global_threshold == 0.20
+    assert result.thresholds[0] == 0.50
+    assert result.thresholds[1] == 0.20
+    assert result.objective.f1 == pytest.approx(1.0)
+    assert result.report.overall_class_agnostic == Metrics(tp=2, fp=0, fn=0)
+    assert result.candidates[0]["stage"] == "global"
+
+
+def test_optimize_thresholds_recall_floor_rejects_high_f1_low_recall_candidate() -> None:
+    taxonomy = get_taxonomy("legacy3")
+    truth = [
+        ObjectAnnotation("keep-high", 0, BOX),
+        ObjectAnnotation("keep-low", 0, BOX),
+    ]
+    predictions = [
+        Detection("keep-high", 0, 0.90, BOX),
+        Detection("keep-low", 0, 0.20, BOX),
+        Detection("fp-1", 0, 0.20, BOX),
+        Detection("fp-2", 0, 0.20, BOX),
+        Detection("fp-3", 0, 0.20, BOX),
+        Detection("fp-4", 0, 0.20, BOX),
+    ]
+    baseline = ObjectiveScore(
+        f1=0.50,
+        precision=0.33,
+        recall=1.0,
+        fdr=0.67,
+        tp=2,
+        fp=4,
+        fn=0,
+    )
+
+    result = optimize_thresholds(
+        predictions,
+        truth,
+        taxonomy=taxonomy,
+        thresholds=(0.20, 0.50),
+        baseline_objective=baseline,
+        recall_floor_delta=0.0,
+        passes=2,
+    )
+
+    assert result.recall_floor == 1.0
+    assert result.thresholds[0] == 0.20
+    assert result.report.overall_class_agnostic.recall == 1.0
+
+
+@pytest.mark.parametrize("recall_floor_delta", [True, "0.1", object()])
+def test_optimize_thresholds_rejects_non_real_recall_floor_delta(
+    recall_floor_delta: object,
+) -> None:
+    with pytest.raises(TypeError, match="recall_floor_delta"):
+        optimize_thresholds(
+            [],
+            [],
+            taxonomy=get_taxonomy("legacy3"),
+            recall_floor_delta=recall_floor_delta,  # type: ignore[arg-type]
+        )
+
+
+def test_optimize_thresholds_rejects_negative_recall_floor_delta() -> None:
+    with pytest.raises(ValueError, match="recall_floor_delta"):
+        optimize_thresholds(
+            [],
+            [],
+            taxonomy=get_taxonomy("legacy3"),
+            recall_floor_delta=-0.1,
+        )
+
+
+@pytest.mark.parametrize("tie_epsilon", [True, "0.1", object()])
+def test_optimize_thresholds_rejects_non_real_tie_epsilon(tie_epsilon: object) -> None:
+    with pytest.raises(TypeError, match="tie_epsilon"):
+        optimize_thresholds(
+            [],
+            [],
+            taxonomy=get_taxonomy("legacy3"),
+            tie_epsilon=tie_epsilon,  # type: ignore[arg-type]
+        )
+
+
+def test_optimize_thresholds_rejects_negative_tie_epsilon() -> None:
+    with pytest.raises(ValueError, match="tie_epsilon"):
+        optimize_thresholds(
+            [],
+            [],
+            taxonomy=get_taxonomy("legacy3"),
+            tie_epsilon=-0.1,
+        )
+
+
+@pytest.mark.parametrize("passes", [True, 1.5, "2", object()])
+def test_optimize_thresholds_rejects_non_integer_passes(passes: object) -> None:
+    with pytest.raises(TypeError, match="passes"):
+        optimize_thresholds(
+            [],
+            [],
+            taxonomy=get_taxonomy("legacy3"),
+            passes=passes,  # type: ignore[arg-type]
+        )
+
+
+def test_optimize_thresholds_rejects_non_positive_passes() -> None:
+    with pytest.raises(ValueError, match="passes"):
+        optimize_thresholds([], [], taxonomy=get_taxonomy("legacy3"), passes=0)
