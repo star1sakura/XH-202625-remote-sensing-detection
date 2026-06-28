@@ -164,6 +164,27 @@ YOLO26s/HBB、滑窗推理和比赛评估流程，只在 YOLO neck 中加入轻�
 
 保留 `comparison.json` 和 `comparison.md`，作为是否继续完整复刻 MKSNet 的依据。
 
+### 阈值优化
+
+MKSNet-Lite 的 80 epoch 结果显示全局阈值 `0.30` 比 `0.25` 更稳，但 ship 类仍是主要短板。
+可以在不重新训练的情况下，用验证集预测搜索逐类别置信度阈值：
+
+```bash
+.venv/bin/xh-detect optimize-thresholds \
+  --predictions-json outputs/xh25/mksnet-lite/val-predictions.json \
+  --ground-truth-json datasets/xh25/reports/val-ground-truth.json \
+  --baseline-report outputs/xh25/baseline/report.json \
+  --taxonomy xh25 \
+  --output-dir outputs/xh25/mksnet-lite/threshold-optimized
+```
+
+输出目录包含：
+
+- `optimized-thresholds.yaml`：可复制到 `configs/xh25-mksnet-lite.yaml` 的 `class_thresholds`；
+- `report.json`：优化阈值后的验证集评估；
+- `comparison.json` 和 `comparison.md`：和 main 线 baseline 的对比；
+- `search-summary.json` 和 `search-summary.md`：搜索网格、选择原因和 ship 类检查。
+
 ## 5. 无正式数据时的快速检查
 
 不下载权重、不需要 GPU 的完整假检测器闭环：
