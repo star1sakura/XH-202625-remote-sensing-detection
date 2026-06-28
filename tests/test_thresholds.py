@@ -59,6 +59,10 @@ def test_parse_threshold_grid_returns_sorted_unique_values() -> None:
     assert parse_threshold_grid("0.30, 0.10,0.30,0.20") == [0.1, 0.2, 0.3]
 
 
+def test_parse_threshold_grid_accepts_sequence_values() -> None:
+    assert parse_threshold_grid([0.30, 0.10, 0.30, 0.20]) == [0.1, 0.2, 0.3]
+
+
 @pytest.mark.parametrize(
     "grid",
     ["", "0.2,bad", "-0.1,0.2", "0.2,1.1", "nan", "inf", "0.1,,0.2"],
