@@ -128,6 +128,48 @@ def test_prepare_xh25_command_reports_output(
     prepare_dataset_mock.assert_called_once_with(source, output, val_ratio=0.15, seed=42)
 
 
+@patch("xh_detect.cli.build_ship_balanced_dataset")
+def test_build_ship_balanced_xh25_command_forwards_options(
+    build_ship_balanced_dataset: Mock,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "xh25"
+    output = tmp_path / "xh25-ship-balanced"
+    source.mkdir()
+    build_ship_balanced_dataset.return_value = SimpleNamespace(
+        output_root=output,
+        original_train_images=4,
+        balanced_train_images=7,
+        duplicated_train_images=3,
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "build-ship-balanced-xh25",
+            "--source-root",
+            str(source),
+            "--output-root",
+            str(output),
+            "--qhs-factor",
+            "3",
+            "--ms-factor",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["output_root"] == str(output)
+    assert payload["balanced_train_images"] == 7
+    build_ship_balanced_dataset.assert_called_once_with(
+        source,
+        output,
+        qhs_factor=3,
+        ms_factor=2,
+    )
+
+
 @patch("xh_detect.cli.train_model")
 def test_train_command_calls_wrapper(train_model: Mock, tmp_path: Path) -> None:
     dataset = tmp_path / "dataset.yaml"
@@ -336,6 +378,45 @@ def test_evaluate_command_uses_xh25_taxonomy(
     load_truth.assert_called_once_with(truth, taxonomy=taxonomy)
     evaluate_detections.assert_called_once_with([], [], taxonomy=taxonomy)
     report_to_dict.assert_called_once()
+
+
+@patch("xh_detect.cli.write_competition_proxy_artifacts")
+@patch("xh_detect.cli.load_evaluation_report")
+def test_competition_report_command_writes_artifacts(
+    load_evaluation_report: Mock,
+    write_competition_proxy_artifacts: Mock,
+    tmp_path: Path,
+) -> None:
+    report = tmp_path / "report.json"
+    output = tmp_path / "competition"
+    report.write_text("{}", encoding="utf-8")
+    loaded = object()
+    load_evaluation_report.return_value = loaded
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "competition-report",
+            "--report-json",
+            str(report),
+            "--output-dir",
+            str(output),
+            "--experiment-name",
+            "unit",
+            "--latency-seconds",
+            "12.5",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.strip() == str(output / "competition-proxy.json")
+    load_evaluation_report.assert_called_once_with(report)
+    write_competition_proxy_artifacts.assert_called_once_with(
+        loaded,
+        output_dir=output,
+        experiment_name="unit",
+        latency_seconds=12.5,
+    )
 
 
 @patch("xh_detect.cli.threshold_sweep")

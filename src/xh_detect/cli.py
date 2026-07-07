@@ -14,8 +14,13 @@ import ultralytics
 
 from xh_detect import __version__
 from xh_detect.compare import compare_experiments
+from xh_detect.competition import (
+    load_evaluation_report,
+    write_competition_proxy_artifacts,
+)
 from xh_detect.config import PipelineConfig
 from xh_detect.data.dota import ConversionStats, convert_split, write_dataset_yaml
+from xh_detect.data.ship_balance import build_ship_balanced_dataset
 from xh_detect.data.xh25 import prepare_dataset
 from xh_detect.detector import UltralyticsDetector
 from xh_detect.evaluator import (
@@ -169,6 +174,38 @@ def prepare_xh25(
                 "val_images": len(prepared.val_stems),
                 "train_targets": dict(prepared.train_class_counts),
                 "val_targets": dict(prepared.val_class_counts),
+            },
+            ensure_ascii=False,
+        )
+    )
+
+
+@app.command("build-ship-balanced-xh25")
+def build_ship_balanced_xh25_command(
+    source_root: Annotated[
+        Path,
+        typer.Option(exists=True, file_okay=False),
+    ] = Path("datasets/xh25"),
+    output_root: Annotated[Path, typer.Option()] = Path("datasets/xh25-ship-balanced"),
+    qhs_factor: Annotated[int, typer.Option(min=1)] = 2,
+    ms_factor: Annotated[int, typer.Option(min=1)] = 2,
+) -> None:
+    try:
+        result = build_ship_balanced_dataset(
+            source_root,
+            output_root,
+            qhs_factor=qhs_factor,
+            ms_factor=ms_factor,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(
+        json.dumps(
+            {
+                "output_root": str(result.output_root),
+                "original_train_images": result.original_train_images,
+                "balanced_train_images": result.balanced_train_images,
+                "duplicated_train_images": result.duplicated_train_images,
             },
             ensure_ascii=False,
         )
@@ -341,6 +378,29 @@ def evaluate_command(
     payload = report_to_dict(report)
     _write_json(output_path, payload)
     typer.echo(json.dumps(payload, ensure_ascii=False, allow_nan=False))
+
+
+@app.command("competition-report")
+def competition_report_command(
+    report_json: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False),
+    ],
+    output_dir: Annotated[Path, typer.Option()] = Path("outputs/xh25/competition-proxy"),
+    experiment_name: Annotated[str, typer.Option()] = "xh25-experiment",
+    latency_seconds: Annotated[float | None, typer.Option(min=0.0)] = None,
+) -> None:
+    try:
+        report = load_evaluation_report(report_json)
+        write_competition_proxy_artifacts(
+            report,
+            output_dir=output_dir,
+            experiment_name=experiment_name,
+            latency_seconds=latency_seconds,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(str(output_dir / "competition-proxy.json"))
 
 
 @app.command("sweep-thresholds")
