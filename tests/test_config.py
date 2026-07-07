@@ -112,9 +112,7 @@ def test_xh25_hbb_yaml_loads_detect_task_and_taxonomy() -> None:
 
 def test_xh25_mksnet_lite_thresholded_yaml_uses_optimized_thresholds() -> None:
     config_path = (
-        Path(__file__).resolve().parents[1]
-        / "configs"
-        / "xh25-mksnet-lite-thresholded.yaml"
+        Path(__file__).resolve().parents[1] / "configs" / "xh25-mksnet-lite-thresholded.yaml"
     )
 
     config = PipelineConfig.from_yaml(config_path)

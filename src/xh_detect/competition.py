@@ -143,8 +143,7 @@ def build_competition_proxy(
         },
         "overall": _metric_payload(overall),
         "coarse": {
-            group: _metric_payload(report.by_coarse_class[group])
-            for group in COARSE_GROUPS
+            group: _metric_payload(report.by_coarse_class[group]) for group in COARSE_GROUPS
         },
         "ranking_proxy": ranking_proxy,
     }
