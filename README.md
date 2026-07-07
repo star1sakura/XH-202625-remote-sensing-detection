@@ -185,6 +185,55 @@ MKSNet-Lite 的 80 epoch 结果显示全局阈值 `0.30` 比 `0.25` 更稳，但
 - `comparison.json` 和 `comparison.md`：和 main 线 baseline 的对比；
 - `search-summary.json` 和 `search-summary.md`：搜索网格、选择原因和 ship 类检查。
 
+### 比赛评分优先实验
+
+评分方案 `比赛评分方案-V1.5.pdf` 的初赛硬门槛是整体 Recall `>=0.85`、整体 FDR
+`<=0.20`、单幅 `10000x10000` 图像推理时间 `<=20s`。通过硬门槛后，专家评分还会
+参考 ship、aircraft、vehicle 各自 Recall/FDR 和总时效性 7 个排序信号。
+
+当前 MKSNet-Lite 的阈值优化版配置为：
+
+```bash
+configs/xh25-mksnet-lite-thresholded.yaml
+```
+
+生成比赛评分代理报告：
+
+```bash
+.venv/bin/xh-detect competition-report \
+  --report-json outputs/xh25/mksnet-lite/threshold-optimized/report.json \
+  --output-dir outputs/xh25/mksnet-lite/threshold-optimized \
+  --experiment-name xh25-mksnet-lite-thresholded
+```
+
+构建 QHS/MS 轻度重采样训练集：
+
+```bash
+.venv/bin/xh-detect build-ship-balanced-xh25 \
+  --source-root datasets/xh25 \
+  --output-root datasets/xh25-ship-balanced \
+  --qhs-factor 2 \
+  --ms-factor 2
+```
+
+训练 ship-balanced MKSNet-Lite：
+
+```bash
+.venv/bin/xh-detect train \
+  --dataset-yaml datasets/xh25-ship-balanced/dataset.yaml \
+  --model configs/models/xh25-yolo26s-mksnet-lite.yaml \
+  --pretrained yolo26s.pt \
+  --epochs 80 \
+  --image-size 1024 \
+  --device 0 \
+  --batch 8 \
+  --workers 4 \
+  --no-amp \
+  --project runs/train \
+  --name xh25-mksnet-lite-ship-balanced \
+  --no-resume
+```
+
 ## 5. 无正式数据时的快速检查
 
 不下载权重、不需要 GPU 的完整假检测器闭环：
