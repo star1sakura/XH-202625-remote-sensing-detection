@@ -173,3 +173,101 @@ class MKSBlock(nn.Module):
         else:
             y = self.channel_attention(self.spatial_attention(x))
         return x + y
+
+
+class _ConvBNAct(nn.Module):
+    def __init__(self, c1: int, c2: int, stride: int = 1) -> None:
+        super().__init__()
+        self.layers = nn.Sequential(
+            nn.Conv2d(c1, c2, kernel_size=3, stride=stride, padding=1, bias=False),
+            nn.BatchNorm2d(c2),
+            nn.SiLU(inplace=True),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.layers(x)
+
+
+class MKSStage(nn.Module):
+    """A repeated stack of channel-preserving MKS blocks."""
+
+    def __init__(
+        self,
+        channels: int,
+        depth: int = 1,
+        kernel_sizes: Sequence[int] = (3, 5, 7, 9),
+        dilations: Sequence[int] = (1, 1, 2, 2),
+        reduction: int = 16,
+        order: str = "ca_sa",
+    ) -> None:
+        super().__init__()
+        channels = _positive_int(channels, "channels")
+        depth = _positive_int(depth, "depth")
+        self.blocks = nn.Sequential(
+            *[
+                MKSBlock(
+                    channels,
+                    kernel_sizes=kernel_sizes,
+                    dilations=dilations,
+                    reduction=reduction,
+                    order=order,
+                )
+                for _ in range(depth)
+            ]
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.blocks(x)
+
+
+class MKSNetBackbone(nn.Module):
+    """Standalone MKSNet-style backbone that returns P3, P4, and P5 maps."""
+
+    def __init__(
+        self,
+        in_channels: int = 3,
+        channels: Sequence[int] = (64, 128, 256, 512, 768),
+        depths: Sequence[int] = (1, 2, 2, 2),
+        kernel_sizes: Sequence[int] = (3, 5, 7, 9),
+        dilations: Sequence[int] = (1, 1, 2, 2),
+        reduction: int = 16,
+        order: str = "ca_sa",
+    ) -> None:
+        super().__init__()
+        in_channels = _positive_int(in_channels, "in_channels")
+        widths = tuple(channels)
+        if len(widths) != 5:
+            raise ValueError("channels must contain five stage widths")
+        if any(isinstance(item, bool) or not isinstance(item, int) or item <= 0 for item in widths):
+            raise ValueError("channels must contain positive integers")
+        stage_depths = tuple(depths)
+        if len(stage_depths) != 4:
+            raise ValueError("depths must contain four stage depths")
+        for index, depth in enumerate(stage_depths):
+            _positive_int(depth, f"depths[{index}]")
+
+        self.stem = _ConvBNAct(in_channels, widths[0], stride=2)
+        self.stage1 = nn.Sequential(
+            _ConvBNAct(widths[0], widths[1], stride=2),
+            MKSStage(widths[1], stage_depths[0], kernel_sizes, dilations, reduction, order),
+        )
+        self.stage2 = nn.Sequential(
+            _ConvBNAct(widths[1], widths[2], stride=2),
+            MKSStage(widths[2], stage_depths[1], kernel_sizes, dilations, reduction, order),
+        )
+        self.stage3 = nn.Sequential(
+            _ConvBNAct(widths[2], widths[3], stride=2),
+            MKSStage(widths[3], stage_depths[2], kernel_sizes, dilations, reduction, order),
+        )
+        self.stage4 = nn.Sequential(
+            _ConvBNAct(widths[3], widths[4], stride=2),
+            MKSStage(widths[4], stage_depths[3], kernel_sizes, dilations, reduction, order),
+        )
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        x = self.stem(x)
+        x = self.stage1(x)
+        p3 = self.stage2(x)
+        p4 = self.stage3(p3)
+        p5 = self.stage4(p4)
+        return p3, p4, p5

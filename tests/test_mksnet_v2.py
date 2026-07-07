@@ -3,9 +3,12 @@ from __future__ import annotations
 import pytest
 import torch
 
+from xh_detect.models.ultralytics import register_custom_modules
 from xh_detect.models.mksnet_v2 import (
     MKSBlock,
     MKSChannelAttention,
+    MKSNetBackbone,
+    MKSStage,
     MKSSpatialAttention,
 )
 
@@ -54,6 +57,63 @@ def test_mks_block_supports_both_attention_orders() -> None:
 
     assert ca_sa(x).shape == x.shape
     assert sa_ca(x).shape == x.shape
+
+
+def test_mks_stage_preserves_shape_and_depth() -> None:
+    stage = MKSStage(16, depth=2, kernel_sizes=(3, 5), dilations=(1, 2), reduction=4)
+    x = torch.randn(1, 16, 12, 12)
+
+    y = stage(x)
+
+    assert y.shape == x.shape
+    assert len(stage.blocks) == 2
+
+
+def test_mksnet_backbone_returns_p3_p4_p5_feature_maps() -> None:
+    backbone = MKSNetBackbone(
+        channels=(16, 32, 64, 128, 192),
+        depths=(1, 1, 1, 1),
+        kernel_sizes=(3, 5),
+        dilations=(1, 2),
+        reduction=4,
+    )
+    x = torch.randn(1, 3, 128, 128)
+
+    p3, p4, p5 = backbone(x)
+
+    assert p3.shape == (1, 64, 16, 16)
+    assert p4.shape == (1, 128, 8, 8)
+    assert p5.shape == (1, 192, 4, 4)
+
+
+def test_mksnet_backbone_validates_channel_and_depth_lengths() -> None:
+    with pytest.raises(ValueError, match="channels must contain five stage widths"):
+        MKSNetBackbone(channels=(16, 32, 64, 128))
+    with pytest.raises(ValueError, match="depths must contain four stage depths"):
+        MKSNetBackbone(depths=(1, 1, 1))
+
+
+def test_register_custom_modules_exposes_mksnet_v2_to_ultralytics() -> None:
+    import ultralytics.nn.tasks as tasks
+
+    names = ("MKSChannelAttention", "MKSSpatialAttention", "MKSBlock", "MKSStage")
+    originals = {name: getattr(tasks, name, None) for name in names}
+    for name in names:
+        if hasattr(tasks, name):
+            delattr(tasks, name)
+    try:
+        register_custom_modules()
+
+        assert tasks.MKSChannelAttention is MKSChannelAttention
+        assert tasks.MKSSpatialAttention is MKSSpatialAttention
+        assert tasks.MKSBlock is MKSBlock
+        assert tasks.MKSStage is MKSStage
+    finally:
+        for name, original in originals.items():
+            if original is not None:
+                setattr(tasks, name, original)
+            elif hasattr(tasks, name):
+                delattr(tasks, name)
 
 
 @pytest.mark.parametrize(
