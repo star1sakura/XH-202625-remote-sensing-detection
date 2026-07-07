@@ -3,8 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
+from ultralytics import YOLO
 
 from xh_detect.config import PipelineConfig
+from xh_detect.models.ultralytics import register_custom_modules
 
 
 def test_mksnet_lite_model_yaml_contains_custom_blocks() -> None:
@@ -61,3 +63,11 @@ def test_mksnet_v2_full_pipeline_config_loads() -> None:
     assert config.image_size == 1024
     assert config.batch_size == 8
     assert set(config.class_thresholds) == set(range(25))
+
+
+def test_mksnet_v2_full_model_smoke_loads_with_detection_model() -> None:
+    register_custom_modules()
+
+    model = YOLO("configs/models/xh25-yolo-mksnet-v2-full.yaml")
+
+    assert model.model.__class__.__name__ == "DetectionModel"
