@@ -3,8 +3,8 @@ from xh_detect.models.mksnet_v2 import (
     MKSBlock,
     MKSChannelAttention,
     MKSNetBackbone,
-    MKSStage,
     MKSSpatialAttention,
+    MKSStage,
 )
 
 __all__ = [

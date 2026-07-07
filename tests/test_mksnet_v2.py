@@ -3,14 +3,14 @@ from __future__ import annotations
 import pytest
 import torch
 
-from xh_detect.models.ultralytics import register_custom_modules
 from xh_detect.models.mksnet_v2 import (
     MKSBlock,
     MKSChannelAttention,
     MKSNetBackbone,
-    MKSStage,
     MKSSpatialAttention,
+    MKSStage,
 )
+from xh_detect.models.ultralytics import register_custom_modules
 
 
 def test_channel_attention_preserves_shape_and_uses_avg_and_max_paths() -> None:

@@ -47,10 +47,30 @@ def test_mksnet_v2_full_model_yaml_contains_mks_stages() -> None:
     assert model["end2end"] is True
     assert model["reg_max"] == 1
     assert len(custom_layers) == 4
-    assert custom_layers[0] == [-1, 1, "MKSStage", [128, 1, [3, 5, 7, 9], [1, 1, 2, 2], 16, "ca_sa"]]
-    assert custom_layers[1] == [-1, 1, "MKSStage", [256, 2, [3, 5, 7, 9], [1, 1, 2, 2], 16, "ca_sa"]]
-    assert custom_layers[2] == [-1, 1, "MKSStage", [512, 2, [3, 5, 7, 9], [1, 1, 2, 2], 16, "ca_sa"]]
-    assert custom_layers[3] == [-1, 1, "MKSStage", [768, 2, [3, 5, 7, 9], [1, 1, 2, 2], 16, "ca_sa"]]
+    assert custom_layers[0] == [
+        -1,
+        1,
+        "MKSStage",
+        [128, 1, [3, 5, 7, 9], [1, 1, 2, 2], 16, "ca_sa"],
+    ]
+    assert custom_layers[1] == [
+        -1,
+        1,
+        "MKSStage",
+        [256, 2, [3, 5, 7, 9], [1, 1, 2, 2], 16, "ca_sa"],
+    ]
+    assert custom_layers[2] == [
+        -1,
+        1,
+        "MKSStage",
+        [512, 2, [3, 5, 7, 9], [1, 1, 2, 2], 16, "ca_sa"],
+    ]
+    assert custom_layers[3] == [
+        -1,
+        1,
+        "MKSStage",
+        [768, 2, [3, 5, 7, 9], [1, 1, 2, 2], 16, "ca_sa"],
+    ]
     assert layers[-1] == [[15, 18, 21], 1, "Detect", ["nc"]]
 
 
