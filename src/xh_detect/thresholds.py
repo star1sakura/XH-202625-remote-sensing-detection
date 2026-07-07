@@ -31,7 +31,7 @@ DEFAULT_THRESHOLD_GRID: tuple[float, ...] = (
     0.70,
 )
 DEFAULT_THRESHOLD_GRID_TEXT = ",".join(f"{threshold:.2f}" for threshold in DEFAULT_THRESHOLD_GRID)
-_REPORT_METRIC_TOLERANCE = 1e-9
+_REPORT_METRIC_TOLERANCE = 1e-6
 
 
 @dataclass(frozen=True)

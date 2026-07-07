@@ -221,6 +221,29 @@ def test_load_report_objective_reads_existing_evaluation_report(tmp_path: Path) 
     assert objective.tp == 8
 
 
+def test_load_report_objective_accepts_six_decimal_report_rounding(tmp_path: Path) -> None:
+    report_path = tmp_path / "baseline.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "overall_class_agnostic": {
+                    "tp": 3102,
+                    "fp": 120,
+                    "fn": 124,
+                    "recall": 0.961562,
+                    "fdr": 0.037244,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    objective = load_report_objective(report_path)
+
+    assert objective.recall == pytest.approx(0.961562)
+    assert objective.fdr == pytest.approx(0.037244)
+
+
 def test_load_report_objective_rejects_non_object_root(tmp_path: Path) -> None:
     report_path = tmp_path / "bad.json"
     report_path.write_text("[]", encoding="utf-8")
