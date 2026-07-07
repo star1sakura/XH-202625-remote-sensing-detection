@@ -79,6 +79,8 @@ def _validate_output_root(source_root: Path, output_root: Path) -> None:
         raise ValueError(
             f"source_root and output_root overlap: {resolved_source} / {resolved_output}"
         )
+    if output_root.exists() and not output_root.is_dir():
+        raise ValueError(f"output_root already exists and is not empty: {output_root}")
     if output_root.exists() and any(output_root.iterdir()):
         raise ValueError(f"output_root already exists and is not empty: {output_root}")
 
@@ -100,6 +102,11 @@ def _frequency(class_ids: tuple[int, ...], *, qhs_factor: int, ms_factor: int) -
 
 
 def _materialize_split_once(source_root: Path, output_root: Path, split: str) -> list[str]:
+    image_stems = {path.stem for path in (source_root / "images" / split).glob("*.jpg")}
+    label_stems = {path.stem for path in (source_root / "labels" / split).glob("*.txt")}
+    orphan_labels = sorted(label_stems - image_stems)
+    if orphan_labels:
+        raise ValueError(f"missing image for label {orphan_labels[0]}.txt")
     stems: list[str] = []
     for image_path in sorted((source_root / "images" / split).glob("*.jpg")):
         label_path = source_root / "labels" / split / f"{image_path.stem}.txt"

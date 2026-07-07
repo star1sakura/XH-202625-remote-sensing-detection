@@ -72,6 +72,27 @@ def test_build_ship_balanced_dataset_duplicates_qhs_and_ms_train_images(
     assert result.duplicated_by_class == {2: 2, 3: 2}
 
 
+def test_build_ship_balanced_dataset_caps_mixed_qhs_ms_by_max_factor(tmp_path: Path) -> None:
+    source = tmp_path / "xh25"
+    output = tmp_path / "xh25-ship-balanced"
+    _write_dataset(source)
+
+    build_ship_balanced_dataset(source, output, qhs_factor=3, ms_factor=2)
+
+    train_images = sorted(path.name for path in (output / "images" / "train").glob("*.jpg"))
+    assert train_images == [
+        "aircraft.jpg",
+        "ms.jpg",
+        "ms__shipbal01.jpg",
+        "qhs.jpg",
+        "qhs__shipbal01.jpg",
+        "qhs__shipbal02.jpg",
+        "qhs_ms.jpg",
+        "qhs_ms__shipbal01.jpg",
+        "qhs_ms__shipbal02.jpg",
+    ]
+
+
 def test_build_ship_balanced_dataset_keeps_validation_once_and_writes_reports(
     tmp_path: Path,
 ) -> None:
@@ -99,6 +120,16 @@ def test_build_ship_balanced_dataset_keeps_validation_once_and_writes_reports(
     assert "| Original Train Images | 4 |" in markdown
 
 
+def test_build_ship_balanced_dataset_rejects_orphan_validation_label(tmp_path: Path) -> None:
+    source = tmp_path / "xh25"
+    output = tmp_path / "xh25-ship-balanced"
+    _write_dataset(source)
+    (source / "labels" / "val" / "orphan.txt").write_text("3 0.5 0.5 0.2 0.2\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="missing image"):
+        build_ship_balanced_dataset(source, output)
+
+
 def test_build_ship_balanced_dataset_rejects_overlapping_output(tmp_path: Path) -> None:
     source = tmp_path / "xh25"
     _write_dataset(source)
@@ -113,6 +144,16 @@ def test_build_ship_balanced_dataset_rejects_existing_nonempty_output(tmp_path: 
     _write_dataset(source)
     output.mkdir()
     (output / "existing.txt").write_text("busy", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="already exists"):
+        build_ship_balanced_dataset(source, output)
+
+
+def test_build_ship_balanced_dataset_rejects_output_root_file(tmp_path: Path) -> None:
+    source = tmp_path / "xh25"
+    output = tmp_path / "xh25-ship-balanced"
+    _write_dataset(source)
+    output.write_text("busy", encoding="utf-8")
 
     with pytest.raises(ValueError, match="already exists"):
         build_ship_balanced_dataset(source, output)
