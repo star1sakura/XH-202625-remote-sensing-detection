@@ -110,6 +110,25 @@ def test_xh25_hbb_yaml_loads_detect_task_and_taxonomy() -> None:
     assert config.class_thresholds == {class_id: 0.25 for class_id in range(25)}
 
 
+def test_xh25_mksnet_lite_thresholded_yaml_uses_optimized_thresholds() -> None:
+    config_path = (
+        Path(__file__).resolve().parents[1]
+        / "configs"
+        / "xh25-mksnet-lite-thresholded.yaml"
+    )
+
+    config = PipelineConfig.from_yaml(config_path)
+
+    assert config.task == "detect"
+    assert config.taxonomy == "xh25"
+    assert config.model_path == "runs/train/xh25-mksnet-lite/weights/best.pt"
+    assert config.class_thresholds[2] == 0.40
+    assert config.class_thresholds[4] == 0.55
+    assert config.class_thresholds[5] == 0.50
+    for class_id in set(range(25)) - {2, 4, 5}:
+        assert config.class_thresholds[class_id] == 0.30
+
+
 def test_overlap_one_raises_value_error() -> None:
     with pytest.raises(ValueError, match="overlap"):
         PipelineConfig(overlap=1.0)
