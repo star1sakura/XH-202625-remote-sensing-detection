@@ -117,3 +117,9 @@ The only deviation from the brief’s literal YAML text is the `scales.s` width 
 - Updated `tests/test_sph_configs.py` assertions to match the corrected NAM/Swin layer args.
 - Verification command: `python -m pytest tests/test_sph_configs.py -q`
 - Result: `9 passed`
+
+Final state note: the earlier "Green" section records the initial workaround from
+commit `7111239`, where `scales.s` was temporarily widened to `[0.50, 1.00, 1024]`.
+That is no longer the final implementation. Commit `ee3e063` is the authoritative
+Task 3 end state: both NAM/full YAMLs use `scales.s: [0.50, 0.50, 1024]` and their
+custom module channel arguments use the width-scaled tensor channels.
