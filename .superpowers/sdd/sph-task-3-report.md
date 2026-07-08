@@ -110,3 +110,10 @@ Created commit:
 ## Notes / Concerns
 
 The only deviation from the brief’s literal YAML text is the `scales.s` width multiplier in the two new model YAMLs. Without that adjustment, the required smoke-load test fails with a runtime channel mismatch inside `NAMBlock`. The structural layer assertions, Detect indices, runtime config values, and focused test command all match the task requirements.
+
+## Task 3 Narrow Fix Note
+
+- Fixed `configs/models/xh25-yolo26s-sph-p2-nam.yaml` and `configs/models/xh25-yolo26s-sph-full.yaml` to keep `scales.s` at `[0.50, 0.50, 1024]` and updated custom module channel args to the actual scaled channels.
+- Updated `tests/test_sph_configs.py` assertions to match the corrected NAM/Swin layer args.
+- Verification command: `python -m pytest tests/test_sph_configs.py -q`
+- Result: `9 passed`

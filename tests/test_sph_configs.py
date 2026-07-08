@@ -65,8 +65,8 @@ def test_sph_p2_nam_model_yaml_adds_nam_blocks() -> None:
     nam_layers = [layer for layer in layers if layer[2] == "NAMBlock"]
 
     assert len(nam_layers) == 2
-    assert layers[20] == [-1, 1, "NAMBlock", [128]]
-    assert layers[24] == [-1, 1, "NAMBlock", [256]]
+    assert layers[20] == [-1, 1, "NAMBlock", [64]]
+    assert layers[24] == [-1, 1, "NAMBlock", [128]]
     assert layers[-1] == [[20, 24, 27, 30], 1, "Detect", ["nc"]]
 
 
@@ -77,10 +77,10 @@ def test_sph_full_model_yaml_adds_swin_prediction_blocks() -> None:
     swin_layers = [layer for layer in layers if layer[2] == "SwinPredictionBlock"]
 
     assert len(swin_layers) == 4
-    assert layers[21] == [-1, 1, "SwinPredictionBlock", [128, 4, 7, 2.0]]
-    assert layers[26] == [-1, 1, "SwinPredictionBlock", [256, 4, 7, 2.0]]
-    assert layers[30] == [-1, 1, "SwinPredictionBlock", [512, 8, 7, 2.0]]
-    assert layers[34] == [-1, 1, "SwinPredictionBlock", [1024, 8, 7, 2.0]]
+    assert layers[21] == [-1, 1, "SwinPredictionBlock", [64, 4, 7, 2.0]]
+    assert layers[26] == [-1, 1, "SwinPredictionBlock", [128, 4, 7, 2.0]]
+    assert layers[30] == [-1, 1, "SwinPredictionBlock", [256, 8, 7, 2.0]]
+    assert layers[34] == [-1, 1, "SwinPredictionBlock", [512, 8, 7, 2.0]]
     assert layers[-1] == [[21, 26, 30, 34], 1, "Detect", ["nc"]]
 
 
