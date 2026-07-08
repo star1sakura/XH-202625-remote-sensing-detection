@@ -54,6 +54,32 @@ def test_swin_prediction_block_preserves_shape_when_padding_is_needed() -> None:
     assert torch.isfinite(y).all()
 
 
+def test_swin_prediction_block_passes_padding_mask_to_attention() -> None:
+    block = SwinPredictionBlock(24, num_heads=4, window_size=7, mlp_ratio=2.0)
+    x = torch.randn(2, 24, 15, 13)
+    captured: dict[str, torch.Tensor | None] = {}
+    original_forward = block.attn.forward
+
+    def capture_mask(*args: object, **kwargs: object) -> tuple[torch.Tensor, None]:
+        captured["key_padding_mask"] = kwargs.get("key_padding_mask")  # type: ignore[assignment]
+        return original_forward(*args, **kwargs)
+
+    block.attn.forward = capture_mask  # type: ignore[method-assign]
+    try:
+        y = block(x)
+    finally:
+        block.attn.forward = original_forward  # type: ignore[method-assign]
+
+    key_padding_mask = captured["key_padding_mask"]
+
+    assert y.shape == x.shape
+    assert key_padding_mask is not None
+    assert key_padding_mask.dtype == torch.bool
+    assert key_padding_mask.shape == (12, 49)
+    assert key_padding_mask.any()
+    assert int(key_padding_mask.sum().item()) == 198
+
+
 @pytest.mark.parametrize(
     ("kwargs", "match"),
     [

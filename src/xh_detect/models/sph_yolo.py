@@ -78,14 +78,17 @@ class SwinPredictionBlock(nn.Module):
             nn.Linear(hidden_channels, channels),
         )
 
-    def _partition_windows(self, x: torch.Tensor) -> tuple[torch.Tensor, int, int]:
+    def _partition_windows(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, int, int]:
         b, c, h, w = x.shape
         pad_h = (self.window_size - h % self.window_size) % self.window_size
         pad_w = (self.window_size - w % self.window_size) % self.window_size
+        valid_tokens = torch.ones((b, 1, h, w), dtype=torch.bool, device=x.device)
         x = F.pad(x, (0, pad_w, 0, pad_h))
+        valid_tokens = F.pad(valid_tokens, (0, pad_w, 0, pad_h), value=False)
         padded_h = h + pad_h
         padded_w = w + pad_w
         x = x.permute(0, 2, 3, 1).contiguous()
+        valid_tokens = valid_tokens.permute(0, 2, 3, 1).contiguous()
         windows = x.view(
             b,
             padded_h // self.window_size,
@@ -95,7 +98,22 @@ class SwinPredictionBlock(nn.Module):
             c,
         )
         windows = windows.permute(0, 1, 3, 2, 4, 5).contiguous()
-        return windows.view(-1, self.window_size * self.window_size, c), padded_h, padded_w
+        key_padding_mask = valid_tokens.view(
+            b,
+            padded_h // self.window_size,
+            self.window_size,
+            padded_w // self.window_size,
+            self.window_size,
+            1,
+        )
+        key_padding_mask = key_padding_mask.permute(0, 1, 3, 2, 4, 5).contiguous()
+        key_padding_mask = ~key_padding_mask.view(-1, self.window_size * self.window_size)
+        return (
+            windows.view(-1, self.window_size * self.window_size, c),
+            key_padding_mask,
+            padded_h,
+            padded_w,
+        )
 
     def _merge_windows(
         self,
@@ -121,9 +139,15 @@ class SwinPredictionBlock(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         b, _, h, w = x.shape
-        windows, padded_h, padded_w = self._partition_windows(x)
+        windows, key_padding_mask, padded_h, padded_w = self._partition_windows(x)
         attn_input = self.norm1(windows)
-        attn_output, _ = self.attn(attn_input, attn_input, attn_input, need_weights=False)
+        attn_output, _ = self.attn(
+            attn_input,
+            attn_input,
+            attn_input,
+            key_padding_mask=key_padding_mask,
+            need_weights=False,
+        )
         windows = windows + attn_output
         windows = windows + self.mlp(self.norm2(windows))
         return self._merge_windows(windows, b, h, w, padded_h, padded_w)

@@ -7,6 +7,11 @@ runbook, `sph-full` means the approved SPH ablation that combines P2 + NAM + Swi
 prediction blocks; it does not mean an MKSNet full-backbone replacement. NAM and
 Swin variants are follow-up ablations.
 
+The SPH custom module channel arguments in the model YAMLs are matched to the
+active `scale: s` width multipliers. If those variants are rebased onto another
+scale, re-check the `NAMBlock` and `SwinPredictionBlock` channel args against the
+post-scale stage widths before training.
+
 ## Baseline
 
 | Candidate | Overall Recall | Overall FDR | Ship Recall | Ship FDR | Aircraft Recall | Aircraft FDR | Vehicle Recall | Vehicle FDR |
