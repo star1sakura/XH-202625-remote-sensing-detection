@@ -2,7 +2,10 @@
 
 This experiment adapts SPH-YOLOv5 ideas to the XH25 YOLO26-style detector. The
 first trainable candidate is `sph-p2`, which adds a shallow P2 detection path for
-FSC vehicle targets. NAM and Swin variants are follow-up ablations.
+FSC vehicle targets and uses four Detect scales: P2, P3, P4, and P5. Within this
+runbook, `sph-full` means the approved SPH ablation that combines P2 + NAM + Swin
+prediction blocks; it does not mean an MKSNet full-backbone replacement. NAM and
+Swin variants are follow-up ablations.
 
 ## Baseline
 
@@ -81,3 +84,4 @@ Prefer the SPH candidate only if:
 - Ship Recall is at least 0.803383.
 - Aircraft Recall is at least 0.984075.
 - Overall Recall and Overall FDR pass the competition hard gates.
+- `10000 x 10000` tiled inference on RTX3090 remains within the competition timing budget.
