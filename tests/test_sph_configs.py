@@ -37,9 +37,16 @@ def test_sph_p2_pipeline_config_loads() -> None:
     assert config.task == "detect"
     assert config.taxonomy == "xh25"
     assert config.model_path == "runs/train/xh25-sph-p2/weights/best.pt"
+    assert config.device == "0"
     assert config.image_size == 1024
+    assert config.tile_size == 1024
+    assert config.overlap == 0.2
     assert config.batch_size == 8
+    assert config.merge_iou == 0.3
+    assert config.edge_margin == 16
+    assert config.half is True
     assert set(config.class_thresholds) == set(range(25))
+    assert all(threshold == 0.25 for threshold in config.class_thresholds.values())
 
 
 def test_sph_p2_model_smoke_loads_with_detection_model() -> None:
