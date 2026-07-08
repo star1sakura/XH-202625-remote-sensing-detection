@@ -7,6 +7,7 @@ from xh_detect.models.mksnet_v2 import (
     MKSSpatialAttention,
     MKSStage,
 )
+from xh_detect.models.sph_yolo import NAMBlock, SwinPredictionBlock
 
 
 def register_custom_modules() -> None:
@@ -18,3 +19,5 @@ def register_custom_modules() -> None:
     tasks.MKSSpatialAttention = MKSSpatialAttention
     tasks.MKSBlock = MKSBlock
     tasks.MKSStage = MKSStage
+    tasks.NAMBlock = NAMBlock
+    tasks.SwinPredictionBlock = SwinPredictionBlock

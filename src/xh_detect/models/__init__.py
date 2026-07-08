@@ -6,6 +6,7 @@ from xh_detect.models.mksnet_v2 import (
     MKSSpatialAttention,
     MKSStage,
 )
+from xh_detect.models.sph_yolo import NAMBlock, SwinPredictionBlock
 
 __all__ = [
     "MKSBlock",
@@ -14,4 +15,6 @@ __all__ = [
     "MKSNetLiteBlock",
     "MKSStage",
     "MKSSpatialAttention",
+    "NAMBlock",
+    "SwinPredictionBlock",
 ]
