@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from functools import partial
 
 import torch
 from ultralytics.models.yolo.detect import DetectionTrainer
 from ultralytics.nn.tasks import DetectionModel
 from ultralytics.utils import RANK
-from ultralytics.utils.loss import v8DetectionLoss
+from ultralytics.utils.loss import E2ELoss, v8DetectionLoss
 from ultralytics.utils.tal import TaskAlignedAssigner
 
 
@@ -181,7 +182,10 @@ class DensityAwareDetectionModel(DetectionModel):
         self.density_config = density_config
         super().__init__(cfg=cfg, ch=ch, nc=nc, verbose=verbose)
 
-    def init_criterion(self) -> DensityAwareDetectionLoss:
+    def init_criterion(self) -> E2ELoss | DensityAwareDetectionLoss:
+        if getattr(self, "end2end", False):
+            loss_fn = partial(DensityAwareDetectionLoss, config=self.density_config)
+            return E2ELoss(self, loss_fn=loss_fn)
         return DensityAwareDetectionLoss(self, config=self.density_config)
 
 

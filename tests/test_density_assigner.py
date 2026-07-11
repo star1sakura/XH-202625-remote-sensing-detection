@@ -126,3 +126,31 @@ def test_density_detection_loss_installs_density_assigner() -> None:
 
     assert isinstance(loss.assigner, DensityAwareTaskAlignedAssigner)
     assert loss.assigner.vehicle_class_id == 24
+
+
+def test_density_detection_model_preserves_yolo26_end_to_end_loss() -> None:
+    from types import SimpleNamespace
+
+    from ultralytics.utils.loss import E2ELoss
+
+    from xh_detect.models.density_assigner import (
+        DensityAssignerConfig,
+        DensityAwareDetectionModel,
+        DensityAwareTaskAlignedAssigner,
+    )
+
+    model = DensityAwareDetectionModel(
+        "yolo26n.yaml",
+        nc=25,
+        ch=3,
+        verbose=False,
+        density_config=DensityAssignerConfig(),
+    )
+    model.args = SimpleNamespace()
+
+    loss = model.init_criterion()
+
+    assert isinstance(loss, E2ELoss)
+    assert isinstance(loss.one2many.assigner, DensityAwareTaskAlignedAssigner)
+    assert isinstance(loss.one2one.assigner, DensityAwareTaskAlignedAssigner)
+    assert loss.one2one.assigner.topk2 == 1
