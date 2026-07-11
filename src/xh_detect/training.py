@@ -4,6 +4,10 @@ from pathlib import Path
 
 from ultralytics import YOLO
 
+from xh_detect.models.density_assigner import (
+    DensityAssignerConfig,
+    DensityAwareDetectionTrainer,
+)
 from xh_detect.models.ultralytics import register_custom_modules
 
 
@@ -56,6 +60,9 @@ def train_model(
     name: str = "xh25-baseline",
     resume: bool = False,
     pretrained: str | None = None,
+    density_assignment: bool = False,
+    density_constant: float = 12.0,
+    density_threshold: float = 0.25,
 ) -> None:
     dataset = _non_empty(dataset_yaml, "dataset_yaml")
     model_source = _non_empty(model_path, "model_path")
@@ -68,26 +75,36 @@ def train_model(
     project = _project_path(project, "project")
     name = _non_empty(name, "name")
     resume = _bool(resume, "resume")
+    density_assignment = _bool(density_assignment, "density_assignment")
     pretrained_model = None if pretrained is None else _non_empty(pretrained, "pretrained")
 
     register_custom_modules()
     model = YOLO(model_source)
     if pretrained_model is not None:
         model = model.load(pretrained_model)
+    train_arguments: dict[str, object] = {
+        "data": dataset,
+        "epochs": epochs,
+        "imgsz": image_size,
+        "device": device,
+        "batch": batch,
+        "workers": workers,
+        "amp": amp,
+        "seed": 42,
+        "deterministic": True,
+        "project": project,
+        "name": name,
+        "exist_ok": True,
+        "resume": resume,
+    }
+    if density_assignment:
+        DensityAwareDetectionTrainer.density_config = DensityAssignerConfig(
+            constant=density_constant,
+            threshold=density_threshold,
+        )
+        train_arguments["trainer"] = DensityAwareDetectionTrainer
     model.train(
-        data=dataset,
-        epochs=epochs,
-        imgsz=image_size,
-        device=device,
-        batch=batch,
-        workers=workers,
-        amp=amp,
-        seed=42,
-        deterministic=True,
-        project=project,
-        name=name,
-        exist_ok=True,
-        resume=resume,
+        **train_arguments,
     )
 
 

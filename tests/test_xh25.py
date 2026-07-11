@@ -631,6 +631,16 @@ def test_prepare_dataset_is_deterministic_group_safe_and_writes_metadata(
     assert list(first_image_map) == sorted(first.val_stems)
     assert list(first_image_map.values()) == list(range(1, len(first.val_stems) + 1))
 
+    first_train_image_map = json.loads(
+        (first_output / "manifests" / "train-image-map.json").read_text(encoding="utf-8")
+    )
+    second_train_image_map = json.loads(
+        (second_output / "manifests" / "train-image-map.json").read_text(encoding="utf-8")
+    )
+    assert first_train_image_map == second_train_image_map
+    assert list(first_train_image_map) == sorted(first.train_stems)
+    assert list(first_train_image_map.values()) == list(range(1, len(first.train_stems) + 1))
+
     demo_samples = json.loads(
         (first_output / "manifests" / "demo-samples.json").read_text(encoding="utf-8")
     )
@@ -663,6 +673,17 @@ def test_prepare_dataset_is_deterministic_group_safe_and_writes_metadata(
     assert all(annotation["iscrowd"] == 0 for annotation in coco["annotations"])
     assert {annotation["image_id"] for annotation in coco["annotations"]} == set(
         first_image_map.values()
+    )
+
+    train_coco = json.loads(
+        (first_output / "reports" / "train-ground-truth.json").read_text(encoding="utf-8")
+    )
+    assert [image["id"] for image in train_coco["images"]] == list(
+        range(1, len(first.train_stems) + 1)
+    )
+    assert [image["file_name"] for image in train_coco["images"]] == train_manifest
+    assert {annotation["image_id"] for annotation in train_coco["annotations"]} == set(
+        first_train_image_map.values()
     )
 
     analysis = json.loads(
@@ -710,6 +731,25 @@ def test_prepare_dataset_is_deterministic_group_safe_and_writes_metadata(
         "train_groups": analysis["split"]["train"]["source_groups"],
         "val_groups": analysis["split"]["val"]["source_groups"],
     }
+
+
+def test_publish_train_mining_artifacts_upgrades_existing_dataset(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    output_root = tmp_path / "xh25"
+    _write_complete_source(source_root)
+    prepared = prepare_dataset(source_root, output_root, val_ratio=0.15, seed=42)
+    (output_root / "manifests" / "train-image-map.json").unlink()
+    (output_root / "reports" / "train-ground-truth.json").unlink()
+
+    image_map_path, truth_path = xh25_module.publish_train_mining_artifacts(output_root)
+
+    image_map = json.loads(image_map_path.read_text(encoding="utf-8"))
+    truth = json.loads(truth_path.read_text(encoding="utf-8"))
+    assert list(image_map) == sorted(prepared.train_stems)
+    assert list(image_map.values()) == list(range(1, len(prepared.train_stems) + 1))
+    assert [item["file_name"] for item in truth["images"]] == [
+        f"images/train/{stem}.jpg" for stem in sorted(prepared.train_stems)
+    ]
 
 
 def test_prepare_dataset_rejects_existing_regular_file_output_root(

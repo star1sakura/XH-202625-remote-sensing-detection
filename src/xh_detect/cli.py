@@ -18,22 +18,33 @@ from xh_detect.competition import (
     load_evaluation_report,
     write_competition_proxy_artifacts,
 )
+from xh_detect.complementarity import (
+    analyze_complementarity,
+    complementarity_report_to_dict,
+)
 from xh_detect.config import PipelineConfig
 from xh_detect.data.dota import ConversionStats, convert_split, write_dataset_yaml
+from xh_detect.data.hard_negative import (
+    HardNegativePolicy,
+    build_main_hn_dataset,
+)
 from xh_detect.data.ship_balance import build_ship_balanced_dataset
-from xh_detect.data.xh25 import prepare_dataset
+from xh_detect.data.xh25 import prepare_dataset, publish_train_mining_artifacts
 from xh_detect.detector import UltralyticsDetector
 from xh_detect.evaluator import (
-    evaluate as evaluate_detections,
-)
-from xh_detect.evaluator import (
+    audit_false_positives,
+    false_positive_audit_to_dict,
     load_coco_ground_truth,
     load_coco_predictions,
     report_to_dict,
     threshold_sweep,
 )
+from xh_detect.evaluator import (
+    evaluate as evaluate_detections,
+)
 from xh_detect.exporters import export_coco_results
 from xh_detect.pipeline import InferencePipeline
+from xh_detect.postprocess import suppress_class_detections
 from xh_detect.taxonomy import get_taxonomy
 from xh_detect.thresholds import (
     DEFAULT_THRESHOLD_GRID_TEXT,
@@ -45,6 +56,7 @@ from xh_detect.thresholds import (
     optimize_thresholds as optimize_thresholds_search,
 )
 from xh_detect.training import export_tensorrt, train_model
+from xh_detect.types import Detection
 from xh_detect.visualize import draw_detections
 
 app = typer.Typer(no_args_is_help=True)
@@ -180,6 +192,28 @@ def prepare_xh25(
     )
 
 
+@app.command("publish-xh25-train-artifacts")
+def publish_xh25_train_artifacts_command(
+    dataset_root: Annotated[
+        Path,
+        typer.Option(exists=True, file_okay=False),
+    ] = Path("datasets/xh25"),
+) -> None:
+    try:
+        image_map_path, truth_path = publish_train_mining_artifacts(dataset_root)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(
+        json.dumps(
+            {
+                "train_image_map": str(image_map_path),
+                "train_ground_truth": str(truth_path),
+            },
+            ensure_ascii=False,
+        )
+    )
+
+
 @app.command("build-ship-balanced-xh25")
 def build_ship_balanced_xh25_command(
     source_root: Annotated[
@@ -212,6 +246,51 @@ def build_ship_balanced_xh25_command(
     )
 
 
+@app.command("build-main-hn-xh25")
+def build_main_hn_xh25_command(
+    source_root: Annotated[
+        Path,
+        typer.Option(exists=True, file_okay=False),
+    ] = Path("datasets/xh25"),
+    predictions_json: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False),
+    ] = Path("outputs/xh25/main-hn/train-predictions.json"),
+    output_root: Annotated[Path, typer.Option()] = Path("datasets/xh25-main-hn"),
+    confidence_floor: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.60,
+    crop_size: Annotated[int, typer.Option(min=1)] = 512,
+    object_margin: Annotated[int, typer.Option(min=0)] = 16,
+    max_crops_per_group: Annotated[int, typer.Option(min=1)] = 2,
+    vehicle_multiplier: Annotated[int, typer.Option(min=1)] = 2,
+    seed: Annotated[int, typer.Option(min=0)] = 42,
+) -> None:
+    try:
+        policy = HardNegativePolicy(
+            confidence_floor=confidence_floor,
+            crop_size=crop_size,
+            object_margin=object_margin,
+            max_crops_per_group=max_crops_per_group,
+            vehicle_multiplier=vehicle_multiplier,
+            seed=seed,
+        )
+        result = build_main_hn_dataset(source_root, predictions_json, output_root, policy)
+    except (TypeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(
+        json.dumps(
+            {
+                "output_root": str(result.output_root),
+                "original_train_images": result.original_train_images,
+                "vehicle_upsampled_images": result.vehicle_upsampled_images,
+                "selected_hard_negatives": result.selected_hard_negatives,
+                "rejected_target_overlap": result.rejected_target_overlap,
+                "selected_by_coarse_class": result.selected_by_coarse_class,
+            },
+            ensure_ascii=False,
+        )
+    )
+
+
 @app.command()
 def train(
     dataset_yaml: Annotated[
@@ -229,7 +308,17 @@ def train(
     project: Annotated[str, typer.Option()] = "runs/train",
     name: Annotated[str, typer.Option()] = "xh25-baseline",
     resume: Annotated[bool, typer.Option()] = False,
+    density_assignment: Annotated[bool, typer.Option()] = False,
+    density_constant: Annotated[float, typer.Option(min=0.001)] = 12.0,
+    density_threshold: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.25,
 ) -> None:
+    density_options: dict[str, object] = {}
+    if density_assignment:
+        density_options = {
+            "density_assignment": True,
+            "density_constant": density_constant,
+            "density_threshold": density_threshold,
+        }
     train_model(
         str(dataset_yaml),
         model,
@@ -243,6 +332,7 @@ def train(
         name=name,
         resume=resume,
         pretrained=pretrained,
+        **density_options,
     )
 
 
@@ -305,6 +395,107 @@ def _load_image_id_map(path: Path) -> dict[str, int]:
         seen_ids.add(value)
         image_map[key] = value
     return image_map
+
+
+def _load_named_predictions(
+    prediction_specs: list[str],
+    taxonomy_name: str,
+) -> dict[str, list[Detection]]:
+    taxonomy = get_taxonomy(taxonomy_name)
+    predictions: dict[str, list[Detection]] = {}
+    for spec in prediction_specs:
+        name, separator, raw_path = spec.partition("=")
+        if not separator or not name.strip() or not raw_path.strip():
+            raise typer.BadParameter("prediction must use NAME=PATH")
+        normalized_name = name.strip()
+        if normalized_name in predictions:
+            raise typer.BadParameter(f"duplicate prediction model name: {normalized_name}")
+        path = Path(raw_path.strip())
+        if not path.is_file():
+            raise typer.BadParameter(f"prediction file does not exist: {path}")
+        predictions[normalized_name] = load_coco_predictions(path, taxonomy=taxonomy)
+    return predictions
+
+
+@app.command("analyze-complementarity")
+def analyze_complementarity_command(
+    prediction: Annotated[list[str], typer.Option()],
+    ground_truth_json: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False),
+    ],
+    baseline_name: Annotated[str, typer.Option()] = "main",
+    taxonomy: Annotated[str, typer.Option()] = "xh25",
+    output_path: Annotated[Path, typer.Option()] = Path("outputs/xh25/complementarity/report.json"),
+) -> None:
+    try:
+        taxonomy_object = get_taxonomy(taxonomy)
+        predictions = _load_named_predictions(prediction, taxonomy)
+        truth = load_coco_ground_truth(ground_truth_json, taxonomy=taxonomy_object)
+        report = analyze_complementarity(
+            predictions,
+            truth,
+            taxonomy=taxonomy_object,
+            baseline_name=baseline_name,
+        )
+    except (TypeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    _write_json(output_path, complementarity_report_to_dict(report))
+    typer.echo(str(output_path))
+
+
+@app.command("apply-suppression")
+def apply_suppression_command(
+    predictions_json: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    image_map_json: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    config_path: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output_json: Annotated[Path, typer.Option()] = Path(
+        "outputs/xh25/postprocess/predictions.json"
+    ),
+) -> None:
+    config = PipelineConfig.from_yaml(config_path)
+    taxonomy = get_taxonomy(config.taxonomy)
+    image_map = _load_image_id_map(image_map_json)
+    stem_by_id = {str(image_id): stem for stem, image_id in image_map.items()}
+    loaded = load_coco_predictions(predictions_json, taxonomy=taxonomy)
+    try:
+        predictions = [
+            Detection(
+                image_id=stem_by_id[item.image_id],
+                class_id=item.class_id,
+                score=item.score,
+                polygon=item.polygon,
+            )
+            for item in loaded
+        ]
+    except KeyError as exc:
+        message = f"prediction image_id is missing from image map: {exc.args[0]}"
+        raise typer.BadParameter(message) from exc
+    kept = suppress_class_detections(predictions, config.class_suppression)
+    export_coco_results(
+        kept,
+        image_map,
+        output_json,
+        valid_class_ids=taxonomy.valid_ids,
+    )
+    typer.echo(str(output_json))
+
+
+@app.command("audit-false-positives")
+def audit_false_positives_command(
+    predictions_json: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    ground_truth_json: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output_path: Annotated[Path, typer.Option()] = Path(
+        "outputs/xh25/postprocess/false-positive-audit.json"
+    ),
+    taxonomy: Annotated[str, typer.Option()] = "xh25",
+) -> None:
+    taxonomy_object = get_taxonomy(taxonomy)
+    predictions = load_coco_predictions(predictions_json, taxonomy=taxonomy_object)
+    truth = load_coco_ground_truth(ground_truth_json, taxonomy=taxonomy_object)
+    audit = audit_false_positives(predictions, truth, taxonomy=taxonomy_object)
+    _write_json(output_path, false_positive_audit_to_dict(audit))
+    typer.echo(str(output_path))
 
 
 @app.command("infer-dataset")

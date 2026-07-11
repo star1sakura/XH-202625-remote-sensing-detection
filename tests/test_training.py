@@ -171,6 +171,28 @@ def test_train_model_loads_optional_pretrained_weights(
 
 
 @patch("xh_detect.training.YOLO")
+def test_train_model_uses_density_aware_trainer_when_enabled(yolo_class: Mock) -> None:
+    from xh_detect.models.density_assigner import DensityAwareDetectionTrainer
+
+    model = yolo_class.return_value
+
+    train_model(
+        "dataset.yaml",
+        "yolo26s.pt",
+        1,
+        1024,
+        "0",
+        density_assignment=True,
+        density_constant=12.0,
+        density_threshold=0.25,
+    )
+
+    assert model.train.call_args.kwargs["trainer"] is DensityAwareDetectionTrainer
+    assert DensityAwareDetectionTrainer.density_config.constant == 12.0
+    assert DensityAwareDetectionTrainer.density_config.threshold == 0.25
+
+
+@patch("xh_detect.training.YOLO")
 def test_export_tensorrt_returns_exported_path(yolo_class: Mock) -> None:
     model = yolo_class.return_value
     model.export.return_value = "runs/model.engine"

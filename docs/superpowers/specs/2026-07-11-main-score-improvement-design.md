@@ -9,9 +9,11 @@ metrics and avoiding regressions hidden by aircraft-heavy class counts.
 
 The work is intentionally staged:
 
-1. measure whether post-processing can remove ship duplicate detections;
-2. improve the training data seen by main with vehicle and ship hard examples;
-3. only then test a narrowly scoped, vehicle-only density-aware assignment
+1. measure whether existing main/SPH/MKS predictions contain complementary
+   vehicle or ship true positives;
+2. measure whether post-processing can remove ship duplicate detections;
+3. improve the training data seen by main with vehicle and ship hard examples;
+4. test a narrowly scoped, vehicle-only density-aware assignment
    adaptation.
 
 This is a score-improvement program, not another full-backbone reproduction.
@@ -74,6 +76,23 @@ Recall/FDR. These results rule out another full feature-extractor replacement
 as the next experiment.
 
 ## Candidate Sequence
+
+### Phase 0: Existing-Model Complementarity Audit
+
+Before retraining, compare the saved validation predictions from main,
+SPH-P2, SPH-P2-NAM, SPH-Full, and MKSNet-Lite against the same ordered ground
+truth. For each coarse class and model pair, report shared true positives,
+baseline-only true positives, candidate-only recoverable true positives,
+false positives, and the oracle recall obtained when either model may recover
+a target.
+
+The audit does not claim that an oracle union is deployable. It answers the
+bounded question needed for a vehicle confirmation path: whether SPH-P2's
+higher vehicle Recall comes from genuinely complementary targets. A dual-model
+or proposal-confirmation experiment may proceed only when it recovers at least
+three validation FSC targets over main and its measured end-to-end 10,000 x
+10,000 latency can remain at or below 20 seconds. Otherwise SPH variants are
+used only as teachers for train-set hard-example mining.
 
 ### Phase A: Main Post-Processing Audit
 

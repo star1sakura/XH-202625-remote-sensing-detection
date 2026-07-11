@@ -5,6 +5,7 @@ from types import MappingProxyType
 
 import yaml
 
+from xh_detect.postprocess import SuppressionRule
 from xh_detect.taxonomy import get_taxonomy
 
 
@@ -26,9 +27,11 @@ class PipelineConfig:
     edge_margin: int = 16
     half: bool = True
     class_thresholds: Mapping[int, float] = field(default_factory=_default_class_thresholds)
+    class_suppression: Mapping[int, SuppressionRule] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         class_thresholds = dict(self.class_thresholds)
+        class_suppression = dict(self.class_suppression)
         taxonomy = get_taxonomy(self.taxonomy)
 
         if self.task not in {"detect", "obb"}:
@@ -50,7 +53,17 @@ class PipelineConfig:
         for class_id, threshold in class_thresholds.items():
             if not 0 <= threshold <= 1:
                 raise ValueError(f"threshold for class {class_id} must be in [0, 1]")
+        for class_id, rule in class_suppression.items():
+            if (
+                isinstance(class_id, bool)
+                or not isinstance(class_id, int)
+                or class_id not in taxonomy.valid_ids
+            ):
+                raise ValueError("class_suppression IDs must belong to the taxonomy")
+            if not isinstance(rule, SuppressionRule):
+                raise TypeError("class_suppression values must be SuppressionRule instances")
         object.__setattr__(self, "class_thresholds", MappingProxyType(class_thresholds))
+        object.__setattr__(self, "class_suppression", MappingProxyType(class_suppression))
 
     @property
     def valid_class_ids(self) -> frozenset[int]:
@@ -70,6 +83,10 @@ class PipelineConfig:
             "edge_margin": self.edge_margin,
             "half": self.half,
             "class_thresholds": dict(self.class_thresholds),
+            "class_suppression": {
+                class_id: {"method": rule.method, "threshold": rule.threshold}
+                for class_id, rule in self.class_suppression.items()
+            },
         }
 
     @classmethod
@@ -83,6 +100,9 @@ class PipelineConfig:
         class_thresholds = raw_mapping.pop("class_thresholds", None)
         if not isinstance(class_thresholds, Mapping):
             raise ValueError("class_thresholds must be a mapping")
+        class_suppression = raw_mapping.pop("class_suppression", {})
+        if not isinstance(class_suppression, Mapping):
+            raise ValueError("class_suppression must be a mapping")
 
         valid_keys = {
             "task",
@@ -97,6 +117,7 @@ class PipelineConfig:
             "edge_margin",
             "half",
             "class_thresholds",
+            "class_suppression",
         }
         unknown_keys = sorted(key for key in raw_mapping if key not in valid_keys)
         if unknown_keys:
@@ -106,4 +127,16 @@ class PipelineConfig:
         raw_mapping["class_thresholds"] = {
             int(class_id): float(threshold) for class_id, threshold in class_thresholds.items()
         }
+        parsed_suppression: dict[int, SuppressionRule] = {}
+        for class_id, payload in class_suppression.items():
+            if not isinstance(payload, Mapping):
+                raise ValueError("class_suppression rules must be mappings")
+            rule_fields = dict(payload)
+            if set(rule_fields) != {"method", "threshold"}:
+                raise ValueError("class_suppression rules require method and threshold")
+            parsed_suppression[int(class_id)] = SuppressionRule(
+                method=str(rule_fields["method"]),
+                threshold=float(rule_fields["threshold"]),
+            )
+        raw_mapping["class_suppression"] = parsed_suppression
         return cls(**raw_mapping)

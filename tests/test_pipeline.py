@@ -149,6 +149,51 @@ def test_inference_pipeline_filters_by_per_class_thresholds() -> None:
     assert detector.calls[0]["confidence"] == 0.4
 
 
+def test_pipeline_applies_secondary_suppression_only_to_configured_ship() -> None:
+    from xh_detect.pipeline import InferencePipeline
+    from xh_detect.postprocess import SuppressionRule
+
+    config = PipelineConfig(
+        task="detect",
+        taxonomy="xh25",
+        tile_size=20,
+        overlap=0.0,
+        batch_size=4,
+        edge_margin=0,
+        class_thresholds={class_id: 0.25 for class_id in range(25)},
+        class_suppression={3: SuppressionRule("iou", 0.20)},
+    )
+    detector = RecordingDetector(
+        [
+            [
+                _prediction(class_id=3, score=0.95, polygon=((0, 0), (10, 0), (10, 10), (0, 10))),
+                _prediction(class_id=3, score=0.90, polygon=((6, 0), (16, 0), (16, 10), (6, 10))),
+                _prediction(
+                    class_id=24,
+                    score=0.85,
+                    polygon=((0, 10), (10, 10), (10, 20), (0, 20)),
+                ),
+                _prediction(
+                    class_id=24,
+                    score=0.80,
+                    polygon=((6, 10), (16, 10), (16, 20), (6, 20)),
+                ),
+            ]
+        ]
+    )
+
+    result = InferencePipeline(detector, config).run(
+        np.zeros((20, 20, 3), dtype=np.uint8),
+        "ship-secondary",
+    )
+
+    assert [(item.class_id, item.score) for item in result.detections] == [
+        (3, 0.95),
+        (24, 0.85),
+        (24, 0.80),
+    ]
+
+
 def test_inference_pipeline_rejects_detector_class_outside_taxonomy() -> None:
     from xh_detect.pipeline import InferencePipeline
 

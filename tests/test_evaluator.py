@@ -66,6 +66,46 @@ def test_duplicate_predictions_produce_one_tp_and_one_fp() -> None:
     assert report.overall_class_agnostic.fdr == 0.5
 
 
+def test_false_positive_audit_separates_ship_overlap_from_background() -> None:
+    from xh_detect.evaluator import FalsePositiveSources, audit_false_positives
+
+    truth = [ObjectAnnotation("img", 3, GT)]
+    predictions = [
+        Detection("img", 3, 0.95, GT),
+        Detection("img", 3, 0.90, GT),
+        Detection(
+            "img",
+            3,
+            0.80,
+            ((30.0, 0.0), (40.0, 0.0), (40.0, 10.0), (30.0, 10.0)),
+        ),
+    ]
+
+    audit = audit_false_positives(
+        predictions,
+        truth,
+        taxonomy=get_taxonomy("xh25"),
+    )
+
+    assert audit.by_coarse_class["ship"] == FalsePositiveSources(overlap=1, background=1)
+    assert audit.by_coarse_class["ship"].total == 2
+
+
+def test_false_positive_audit_uses_vehicle_point_three_five_match() -> None:
+    from xh_detect.evaluator import audit_false_positives
+
+    truth = [ObjectAnnotation("img", 24, GT)]
+    predictions = [Detection("img", 24, 0.9, box_with_iou(0.35))]
+
+    audit = audit_false_positives(
+        predictions,
+        truth,
+        taxonomy=get_taxonomy("xh25"),
+    )
+
+    assert audit.by_coarse_class["vehicle"].total == 0
+
+
 @pytest.mark.parametrize(
     ("class_id", "prediction_width", "expected_tp"),
     [(0, 5.0, 1), (1, 5.0, 1), (2, 3.5, 1), (2, 3.49, 0)],

@@ -20,6 +20,7 @@ def test_pipeline_config_defaults_match_expected_values() -> None:
     assert config.edge_margin == 16
     assert config.half is True
     assert config.class_thresholds == {0: 0.25, 1: 0.25, 2: 0.25}
+    assert config.class_suppression == {}
     assert config.valid_class_ids == frozenset({0, 1, 2})
 
 
@@ -52,6 +53,7 @@ def test_pipeline_config_to_dict_returns_serializable_primitives() -> None:
         "edge_margin": 16,
         "half": True,
         "class_thresholds": {0: 0.25, 1: 0.25, 2: 0.25},
+        "class_suppression": {},
     }
 
 
@@ -217,3 +219,68 @@ def test_from_yaml_converts_threshold_keys_and_values(tmp_path: Path) -> None:
     assert config.class_thresholds == {0: 1.0, 1: 0.5, 2: 0.25}
     assert all(isinstance(class_id, int) for class_id in config.class_thresholds)
     assert all(isinstance(threshold, float) for threshold in config.class_thresholds.values())
+
+
+def test_pipeline_config_loads_ship_only_suppression(tmp_path: Path) -> None:
+    path = tmp_path / "ship.yaml"
+    path.write_text(
+        "task: detect\n"
+        "taxonomy: xh25\n"
+        "model_path: model.pt\n"
+        "class_suppression:\n"
+        "  3: {method: diou, threshold: 0.15}\n"
+        "class_thresholds:\n" + "".join(f"  {class_id}: 0.25\n" for class_id in range(25)),
+        encoding="utf-8",
+    )
+
+    config = PipelineConfig.from_yaml(path)
+
+    assert config.class_suppression[3].method == "diou"
+    assert config.class_suppression[3].threshold == 0.15
+
+
+def test_pipeline_config_rejects_suppression_class_outside_taxonomy() -> None:
+    from xh_detect.postprocess import SuppressionRule
+
+    with pytest.raises(ValueError, match="class_suppression"):
+        PipelineConfig(class_suppression={24: SuppressionRule("iou", 0.3)})
+
+
+@pytest.mark.parametrize(
+    ("name", "method", "threshold"),
+    [
+        ("xh25-main-ship-iou.yaml", "iou", 0.30),
+        ("xh25-main-ship-diou.yaml", "diou", 0.15),
+    ],
+)
+def test_main_ship_postprocess_configs_are_ship_only(
+    name: str,
+    method: str,
+    threshold: float,
+) -> None:
+    config = PipelineConfig.from_yaml(Path(__file__).resolve().parents[1] / "configs" / name)
+
+    assert config.model_path == "runs/train/xh25-yolo26s-e80/weights/best.pt"
+    assert set(config.class_suppression) == {0, 1, 2, 3}
+    assert {rule.method for rule in config.class_suppression.values()} == {method}
+    assert {rule.threshold for rule in config.class_suppression.values()} == {threshold}
+
+
+@pytest.mark.parametrize(
+    ("name", "run_name"),
+    [
+        ("xh25-main-hn.yaml", "xh25-main-hn"),
+        ("xh25-main-hn-density.yaml", "xh25-main-hn-density"),
+    ],
+)
+def test_main_hn_configs_only_change_candidate_weight_path(
+    name: str,
+    run_name: str,
+) -> None:
+    config = PipelineConfig.from_yaml(Path(__file__).resolve().parents[1] / "configs" / name)
+
+    assert config.model_path == f"runs/train/{run_name}/weights/best.pt"
+    assert config.taxonomy == "xh25"
+    assert config.image_size == 1024
+    assert config.class_suppression == {}
+    assert set(config.class_thresholds) == set(range(25))
