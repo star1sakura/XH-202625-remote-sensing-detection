@@ -131,6 +131,43 @@ def test_crop_side_uses_context_scale_and_clamps() -> None:
     assert policy.crop_side(200, 100) == 256
 
 
+def test_reserves_three_holdout_positives_when_train_can_keep_one(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    main, sph = _write_fixture(source)
+    image_map_path = source / "manifests" / "train-image-map.json"
+    groups_path = source / "manifests" / "source-groups.json"
+    truth_path = source / "reports" / "train-ground-truth.json"
+    image_map = json.loads(image_map_path.read_text(encoding="utf-8"))
+    groups = json.loads(groups_path.read_text(encoding="utf-8"))
+    truth = json.loads(truth_path.read_text(encoding="utf-8"))
+    sph_predictions = json.loads(sph.read_text(encoding="utf-8"))
+    for image_id, stem in ((5, "e_img"), (6, "f_img")):
+        image_map[stem] = image_id
+        groups[stem] = {"group": f"group-{stem[0]}", "split": "train"}
+        image_path = source / "images" / "train" / f"{stem}.jpg"
+        assert cv2.imwrite(str(image_path), np.full((100, 100, 3), 255, dtype=np.uint8))
+        (source / "labels" / "train" / f"{stem}.txt").write_text("", encoding="utf-8")
+        truth["annotations"].append(
+            {"image_id": image_id, "category_id": 24, "bbox": [40, 40, 10, 10]}
+        )
+        sph_predictions.append(_prediction(image_id, 0.85, [40, 40, 10, 10]))
+    image_map_path.write_text(json.dumps(image_map), encoding="utf-8")
+    groups_path.write_text(json.dumps(groups), encoding="utf-8")
+    truth_path.write_text(json.dumps(truth), encoding="utf-8")
+    sph.write_text(json.dumps(sph_predictions), encoding="utf-8")
+
+    result = build_vehicle_confirmer_dataset(
+        source,
+        main,
+        sph,
+        tmp_path / "output",
+        VehicleCropPolicy(holdout_ratio=0.2),
+    )
+
+    assert result.holdout_positive == 3
+    assert result.train_positive == 1
+
+
 def test_rejects_validation_group_before_writing(tmp_path: Path) -> None:
     source = tmp_path / "source"
     main, sph = _write_fixture(source)

@@ -170,23 +170,35 @@ def _split_groups(
     total_positive, total_negative = _group_counts(candidates)
     if total_positive < 2 or total_negative < 2:
         raise ValueError("at least two positive and two negative proposals are required")
+    minimum_holdout_positive = min(3, total_positive - 1)
 
     def valid_holdout(groups: set[str]) -> bool:
         holdout_items = [item for group in groups for item in by_group[group]]
         holdout_positive, holdout_negative = _group_counts(holdout_items)
         return (
-            holdout_positive > 0
+            holdout_positive >= minimum_holdout_positive
             and holdout_negative > 0
             and total_positive - holdout_positive > 0
             and total_negative - holdout_negative > 0
         )
 
     anchors: set[str] | None = None
-    for width in (1, 2):
-        for selected in combinations(ranked, width):
-            candidate = set(selected)
-            if valid_holdout(candidate):
-                anchors = candidate
+    positive_groups = [group for group in ranked if _group_counts(by_group[group])[0] > 0]
+    for width in range(1, len(positive_groups) + 1):
+        for selected in combinations(positive_groups, width):
+            selected_groups = set(selected)
+            selected_positive = sum(_group_counts(by_group[group])[0] for group in selected_groups)
+            if selected_positive < minimum_holdout_positive:
+                continue
+            candidates_to_check = [selected_groups]
+            candidates_to_check.extend(
+                selected_groups | {group} for group in ranked if group not in selected_groups
+            )
+            anchors = next(
+                (candidate for candidate in candidates_to_check if valid_holdout(candidate)),
+                None,
+            )
+            if anchors is not None:
                 break
         if anchors is not None:
             break
