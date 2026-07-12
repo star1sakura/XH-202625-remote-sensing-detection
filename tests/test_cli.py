@@ -1412,6 +1412,71 @@ def test_benchmark_command_creates_missing_image_and_prints_json(
     assert json.loads(result.stdout) == {"median_s": 1.2, "p95_s": 1.5}
 
 
+def test_benchmark_vehicle_proposals_command_writes_paired_report(tmp_path: Path) -> None:
+    main_config_path = tmp_path / "main.yaml"
+    sph_config_path = tmp_path / "sph.yaml"
+    image_path = tmp_path / "scene.png"
+    output_path = tmp_path / "paired-latency.json"
+    main_config_path.write_text("main", encoding="utf-8")
+    sph_config_path.write_text("sph", encoding="utf-8")
+    image_path.write_bytes(b"image")
+    image = np.zeros((8, 8, 3), dtype=np.uint8)
+    main_config = PipelineConfig(device="cpu", half=False)
+    sph_config = PipelineConfig(device="cpu", half=False)
+    latency_report = SimpleNamespace(proposal_gate_passed=True)
+    payload = {"combined": {"maximum_s": 12.0}, "gate": {"passed": True}}
+
+    with (
+        patch("xh_detect.cli.cv2.imread", return_value=image),
+        patch(
+            "xh_detect.cli.PipelineConfig.from_yaml",
+            side_effect=[main_config, sph_config],
+        ),
+        patch("xh_detect.cli._build_detector", side_effect=["main-detector", "sph-detector"]),
+        patch("xh_detect.cli.InferencePipeline", side_effect=["main-pipeline", "sph-pipeline"]),
+        patch(
+            "xh_detect.cli.benchmark_vehicle_proposal_pair",
+            return_value=latency_report,
+        ) as benchmark_pair,
+        patch("xh_detect.cli.vehicle_latency_report_to_dict", return_value=payload),
+    ):
+        result = CliRunner().invoke(
+            app,
+            [
+                "benchmark-vehicle-proposals",
+                "--main-config-path",
+                str(main_config_path),
+                "--sph-config-path",
+                str(sph_config_path),
+                "--image-path",
+                str(image_path),
+                "--repeats",
+                "3",
+                "--reserve-seconds",
+                "1",
+                "--limit-seconds",
+                "20",
+                "--output-path",
+                str(output_path),
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.strip() == str(output_path)
+    written = json.loads(output_path.read_text(encoding="utf-8"))
+    assert written["image"] == {"path": str(image_path), "synthetic": False}
+    assert written["gate"]["passed"] is True
+    benchmark_pair.assert_called_once_with(
+        "main-pipeline",
+        "sph-pipeline",
+        image,
+        "scene",
+        repeats=3,
+        reserve_seconds=1.0,
+        limit_seconds=20.0,
+    )
+
+
 @patch("xh_detect.cli.torch.cuda.get_device_name")
 @patch("xh_detect.cli.torch.cuda.is_available", return_value=False)
 def test_env_command_reports_cpu(

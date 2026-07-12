@@ -57,6 +57,10 @@ from xh_detect.thresholds import (
 )
 from xh_detect.training import export_tensorrt, train_model
 from xh_detect.types import Detection
+from xh_detect.vehicle_confirmation.benchmark import (
+    benchmark_vehicle_proposal_pair,
+    vehicle_latency_report_to_dict,
+)
 from xh_detect.vehicle_confirmation.proposals import (
     analyze_vehicle_consensus,
     vehicle_consensus_report_to_dict,
@@ -771,6 +775,57 @@ def benchmark(
     pipeline = InferencePipeline(detector, config, cache_root=None)
     summary = benchmark_pipeline(pipeline, image, image_path.stem, repeats)
     typer.echo(json.dumps(summary, allow_nan=False))
+
+
+@app.command("benchmark-vehicle-proposals")
+def benchmark_vehicle_proposals_command(
+    main_config_path: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False),
+    ] = Path("configs/xh25-historical-main.yaml"),
+    sph_config_path: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False),
+    ] = Path("configs/xh25-sph-p2.yaml"),
+    image_path: Annotated[Path, typer.Option()] = Path(
+        "outputs/benchmark/synthetic-10000.png"
+    ),
+    repeats: Annotated[int, typer.Option(min=1)] = 5,
+    reserve_seconds: Annotated[float, typer.Option(min=0.0)] = 1.0,
+    limit_seconds: Annotated[float, typer.Option(min=0.001)] = 20.0,
+    output_path: Annotated[Path, typer.Option()] = Path(
+        "outputs/xh25/vehicle-confirmation/paired-latency.json"
+    ),
+) -> None:
+    synthetic = not image_path.exists()
+    if synthetic:
+        create_synthetic_image(image_path)
+    image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+    if image is None:
+        raise typer.BadParameter(f"cannot read benchmark image: {image_path}")
+
+    main_config = PipelineConfig.from_yaml(main_config_path)
+    sph_config = PipelineConfig.from_yaml(sph_config_path)
+    main_pipeline = InferencePipeline(_build_detector(main_config), main_config, cache_root=None)
+    sph_pipeline = InferencePipeline(_build_detector(sph_config), sph_config, cache_root=None)
+    try:
+        report = benchmark_vehicle_proposal_pair(
+            main_pipeline,
+            sph_pipeline,
+            image,
+            image_path.stem,
+            repeats=repeats,
+            reserve_seconds=reserve_seconds,
+            limit_seconds=limit_seconds,
+        )
+    except (TypeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    payload = {
+        **vehicle_latency_report_to_dict(report),
+        "image": {"path": str(image_path), "synthetic": synthetic},
+    }
+    _write_json(output_path, payload)
+    typer.echo(str(output_path))
 
 
 @app.command()
