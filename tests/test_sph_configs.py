@@ -40,6 +40,9 @@ def test_vehicle_expert_sph_p2_model_and_pipeline_are_one_class() -> None:
     assert _layers(model)[-1] == [[19, 22, 25, 28], 1, "Detect", ["nc"]]
     assert config.taxonomy == "vehicle1"
     assert config.model_path == "runs/train/vehicle-expert-sph-p2/weights/best.pt"
+    assert config.image_size == 1024
+    assert config.tile_size == 512
+    assert config.overlap == 0.25
     assert config.class_thresholds == {0: 0.25}
 
 

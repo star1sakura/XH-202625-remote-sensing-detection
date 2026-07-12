@@ -94,11 +94,14 @@ def _validate_roots(source_root: Path, output_root: Path) -> None:
         raise ValueError(f"output_root already exists and is not empty: {output_root}")
 
 
-def _train_layout(source_root: Path) -> tuple[dict[str, str], dict[str, str]]:
+def _train_layout(
+    source_root: Path,
+) -> tuple[dict[str, str], dict[str, str], dict[str, int]]:
     image_map = _load_mapping(source_root / "manifests" / "train-image-map.json", "train image map")
     source_groups = _load_mapping(source_root / "manifests" / "source-groups.json", "source groups")
     id_to_stem: dict[str, str] = {}
     group_by_stem: dict[str, str] = {}
+    stem_to_id: dict[str, int] = {}
     for stem, image_id in image_map.items():
         if isinstance(image_id, bool) or not isinstance(image_id, int):
             raise ValueError("train image IDs must be integers")
@@ -117,7 +120,8 @@ def _train_layout(source_root: Path) -> tuple[dict[str, str], dict[str, str]]:
             raise ValueError(f"train image or label is missing for {stem}")
         id_to_stem[normalized_id] = stem
         group_by_stem[stem] = group
-    return id_to_stem, group_by_stem
+        stem_to_id[stem] = image_id
+    return id_to_stem, group_by_stem, stem_to_id
 
 
 def _split_groups(
@@ -210,7 +214,7 @@ def build_vehicle_expert_dataset(
     source_root = Path(source_root)
     output_root = Path(output_root)
     _validate_roots(source_root, output_root)
-    id_to_stem, group_by_stem = _train_layout(source_root)
+    id_to_stem, group_by_stem, stem_to_id = _train_layout(source_root)
     taxonomy = get_taxonomy("xh25")
     truth = load_coco_ground_truth(
         source_root / "reports" / "train-ground-truth.json", taxonomy=taxonomy
@@ -343,6 +347,35 @@ def build_vehicle_expert_dataset(
             )
         (manifests / "source-groups.json").write_text(
             json.dumps(generated_groups, indent=2, sort_keys=True), encoding="utf-8"
+        )
+        source_val_image_map = {
+            stem: stem_to_id[stem]
+            for stem in sorted(stem_to_id)
+            if group_by_stem[stem] in val_groups
+        }
+        (manifests / "source-val-image-map.json").write_text(
+            json.dumps(source_val_image_map, indent=2), encoding="utf-8"
+        )
+        source_val_ids = {str(image_id) for image_id in source_val_image_map.values()}
+        source_val_truth = {
+            "annotations": [
+                {
+                    "image_id": int(item.image_id),
+                    "category_id": item.class_id,
+                    "bbox": [
+                        obb_to_hbb(item.polygon)[0],
+                        obb_to_hbb(item.polygon)[1],
+                        obb_to_hbb(item.polygon)[2] - obb_to_hbb(item.polygon)[0],
+                        obb_to_hbb(item.polygon)[3] - obb_to_hbb(item.polygon)[1],
+                    ],
+                    "iscrowd": int(item.difficult),
+                }
+                for item in truth
+                if item.image_id in source_val_ids
+            ]
+        }
+        (reports / "source-val-ground-truth.json").write_text(
+            json.dumps(source_val_truth, indent=2), encoding="utf-8"
         )
         report = {
             "policy": asdict(policy),

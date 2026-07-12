@@ -88,6 +88,19 @@ def test_builds_one_class_positive_and_hard_negative_crops(tmp_path: Path) -> No
     assert (output / "dataset.yaml").is_file()
     assert len(list((output / "images" / "train").glob("*.jpg"))) == result.train_crops
     assert len(list((output / "images" / "val").glob("*.jpg"))) == result.val_crops
+    source_val_map = json.loads(
+        (output / "manifests" / "source-val-image-map.json").read_text(encoding="utf-8")
+    )
+    source_groups = json.loads(
+        (source / "manifests" / "source-groups.json").read_text(encoding="utf-8")
+    )
+    assert {source_groups[stem]["group"] for stem in source_val_map} == result.val_groups
+    source_val_truth = json.loads(
+        (output / "reports" / "source-val-ground-truth.json").read_text(encoding="utf-8")
+    )
+    assert {item["image_id"] for item in source_val_truth["annotations"]} <= set(
+        source_val_map.values()
+    )
 
 
 def test_vehicle_expert_dataset_is_seed_deterministic(tmp_path: Path) -> None:

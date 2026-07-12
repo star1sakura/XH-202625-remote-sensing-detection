@@ -463,6 +463,63 @@ def test_analyze_vehicle_proposals_command_writes_consensus_report(tmp_path: Pat
     assert payload["consensus"]["recoverable_tp"] == 1
 
 
+def test_analyze_vehicle_expert_command_selects_holdout_point(tmp_path: Path) -> None:
+    main = tmp_path / "main.json"
+    expert = tmp_path / "expert.json"
+    truth = tmp_path / "truth.json"
+    image_map = tmp_path / "image-map.json"
+    output = tmp_path / "report.json"
+    main.write_text(
+        json.dumps([{"image_id": 1, "category_id": 24, "bbox": [0, 0, 10, 10], "score": 0.9}]),
+        encoding="utf-8",
+    )
+    expert.write_text(
+        json.dumps(
+            [
+                {"image_id": 1, "category_id": 0, "bbox": [20, 0, 10, 10], "score": 0.8},
+                {"image_id": 1, "category_id": 0, "bbox": [40, 0, 10, 10], "score": 0.7},
+                {"image_id": 1, "category_id": 0, "bbox": [60, 0, 10, 10], "score": 0.6},
+                {"image_id": 1, "category_id": 0, "bbox": [90, 0, 10, 10], "score": 0.55},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    truth.write_text(
+        json.dumps(
+            {
+                "annotations": [
+                    {"image_id": 1, "category_id": 24, "bbox": [x, 0, 10, 10]}
+                    for x in (0, 20, 40, 60)
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    image_map.write_text(json.dumps({"img": 1}), encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "analyze-vehicle-expert",
+            "--main-predictions",
+            str(main),
+            "--expert-predictions",
+            str(expert),
+            "--ground-truth-json",
+            str(truth),
+            "--image-map-json",
+            str(image_map),
+            "--output-path",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["decision"] == "PROMOTE"
+    assert payload["selected"]["threshold"] == 0.6
+
+
 def test_apply_suppression_command_writes_filtered_predictions(tmp_path: Path) -> None:
     predictions = tmp_path / "predictions.json"
     image_map = tmp_path / "image-map.json"

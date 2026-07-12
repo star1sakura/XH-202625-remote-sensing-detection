@@ -80,6 +80,10 @@ from xh_detect.vehicle_confirmation.proposals import (
     analyze_vehicle_consensus,
     vehicle_consensus_report_to_dict,
 )
+from xh_detect.vehicle_expert import (
+    analyze_vehicle_expert_holdout,
+    vehicle_expert_report_to_dict,
+)
 from xh_detect.visualize import draw_detections
 
 app = typer.Typer(no_args_is_help=True)
@@ -663,6 +667,33 @@ def analyze_vehicle_proposals_command(
     except (TypeError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
     _write_json(output_path, vehicle_consensus_report_to_dict(report))
+    typer.echo(str(output_path))
+
+
+@app.command("analyze-vehicle-expert")
+def analyze_vehicle_expert_command(
+    main_predictions: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    expert_predictions: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    ground_truth_json: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    image_map_json: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output_path: Annotated[Path, typer.Option()] = Path(
+        "outputs/xh25/vehicle-expert/holdout-report.json"
+    ),
+) -> None:
+    xh25 = get_taxonomy("xh25")
+    vehicle1 = get_taxonomy("vehicle1")
+    try:
+        image_map = _load_image_id_map(image_map_json)
+        report = analyze_vehicle_expert_holdout(
+            load_coco_predictions(main_predictions, taxonomy=xh25),
+            load_coco_predictions(expert_predictions, taxonomy=vehicle1),
+            load_coco_ground_truth(ground_truth_json, taxonomy=xh25),
+            image_ids={str(image_id) for image_id in image_map.values()},
+            thresholds=tuple(round(index * 0.05, 2) for index in range(1, 20)),
+        )
+    except (TypeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    _write_json(output_path, vehicle_expert_report_to_dict(report))
     typer.echo(str(output_path))
 
 
