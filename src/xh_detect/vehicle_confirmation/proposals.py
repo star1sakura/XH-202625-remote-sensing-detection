@@ -31,6 +31,17 @@ class VehicleProposalReport:
     duplicate_proposal: int
 
 
+@dataclass(frozen=True)
+class VehicleConsensusReport:
+    sph: VehicleProposalReport
+    mks: VehicleProposalReport
+    consensus_recoverable_tp: int
+    consensus_fp: int
+    accepted_sph_indexes: tuple[int, ...]
+    accepted_mks_indexes: tuple[int, ...]
+    historical_fdr_constraint_passed: bool
+
+
 def _validate_class_id(class_id: object) -> int:
     if isinstance(class_id, bool) or not isinstance(class_id, int):
         raise TypeError("class_id must be an integer")
@@ -252,3 +263,100 @@ def satisfies_vehicle_fdr(
     detections = baseline_tp + added_tp + false_positives
     fused_fdr = false_positives / detections if detections else 0.0
     return fused_fdr <= ceiling
+
+
+def analyze_vehicle_consensus(
+    main_predictions: Iterable[Detection],
+    sph_predictions: Iterable[Detection],
+    mks_predictions: Iterable[Detection],
+    ground_truth: Iterable[ObjectAnnotation],
+    *,
+    vehicle_class_id: int = 24,
+    iou_threshold: float = 0.35,
+) -> VehicleConsensusReport:
+    main_items = tuple(main_predictions)
+    truth_items = tuple(ground_truth)
+    sph_labels, sph_report = label_vehicle_proposals(
+        main_items,
+        sph_predictions,
+        truth_items,
+        vehicle_class_id=vehicle_class_id,
+        iou_threshold=iou_threshold,
+    )
+    mks_labels, mks_report = label_vehicle_proposals(
+        main_items,
+        mks_predictions,
+        truth_items,
+        vehicle_class_id=vehicle_class_id,
+        iou_threshold=iou_threshold,
+    )
+
+    sph_candidates = tuple(item for item in sph_labels if not item.duplicate_main)
+    mks_candidates = tuple(item for item in mks_labels if not item.duplicate_main)
+    matched_mks: set[int] = set()
+    accepted_sph_indexes: list[int] = []
+    accepted_mks_indexes: list[int] = []
+    recoverable_tp = 0
+    false_positives = 0
+    for sph_item in sph_candidates:
+        match_position: int | None = None
+        sph_hbb = obb_to_hbb(sph_item.detection.polygon)
+        for position, mks_item in enumerate(mks_candidates):
+            if position in matched_mks:
+                continue
+            if mks_item.detection.image_id != sph_item.detection.image_id:
+                continue
+            if hbb_iou(sph_hbb, obb_to_hbb(mks_item.detection.polygon)) >= iou_threshold:
+                match_position = position
+                break
+        if match_position is None:
+            continue
+
+        matched_mks.add(match_position)
+        matched_item = mks_candidates[match_position]
+        accepted_sph_indexes.append(sph_item.proposal_index)
+        accepted_mks_indexes.append(matched_item.proposal_index)
+        if sph_item.label == 1:
+            recoverable_tp += 1
+        else:
+            false_positives += 1
+
+    return VehicleConsensusReport(
+        sph=sph_report,
+        mks=mks_report,
+        consensus_recoverable_tp=recoverable_tp,
+        consensus_fp=false_positives,
+        accepted_sph_indexes=tuple(accepted_sph_indexes),
+        accepted_mks_indexes=tuple(accepted_mks_indexes),
+        historical_fdr_constraint_passed=satisfies_vehicle_fdr(
+            55,
+            14,
+            recoverable_tp,
+            false_positives,
+        ),
+    )
+
+
+def _proposal_report_to_dict(report: VehicleProposalReport) -> dict[str, int]:
+    return {
+        "main_vehicle_tp": report.main_vehicle_tp,
+        "main_vehicle_fp": report.main_vehicle_fp,
+        "recoverable_tp": report.recoverable_tp,
+        "proposal_fp": report.proposal_fp,
+        "duplicate_main": report.duplicate_main,
+        "duplicate_proposal": report.duplicate_proposal,
+    }
+
+
+def vehicle_consensus_report_to_dict(report: VehicleConsensusReport) -> dict[str, object]:
+    return {
+        "sph": _proposal_report_to_dict(report.sph),
+        "mks": _proposal_report_to_dict(report.mks),
+        "consensus": {
+            "recoverable_tp": report.consensus_recoverable_tp,
+            "fp": report.consensus_fp,
+            "accepted_sph_indexes": list(report.accepted_sph_indexes),
+            "accepted_mks_indexes": list(report.accepted_mks_indexes),
+            "historical_fdr_constraint_passed": report.historical_fdr_constraint_passed,
+        },
+    }

@@ -305,6 +305,68 @@ def test_analyze_complementarity_command_writes_pairwise_report(tmp_path: Path) 
     assert payload["pairwise"]["candidate"]["vehicle"]["candidate_only_tp"] == 1
 
 
+def test_analyze_vehicle_proposals_command_writes_consensus_report(tmp_path: Path) -> None:
+    truth = tmp_path / "truth.json"
+    main_predictions = tmp_path / "main.json"
+    sph_predictions = tmp_path / "sph.json"
+    mks_predictions = tmp_path / "mks.json"
+    output = tmp_path / "vehicle-proposals.json"
+    truth.write_text(
+        json.dumps(
+            {
+                "annotations": [
+                    {"image_id": 1, "category_id": 24, "bbox": [0, 0, 10, 10]},
+                    {"image_id": 1, "category_id": 24, "bbox": [30, 0, 10, 10]},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    main_predictions.write_text(
+        json.dumps(
+            [{"image_id": 1, "category_id": 24, "bbox": [0, 0, 10, 10], "score": 0.9}]
+        ),
+        encoding="utf-8",
+    )
+    sph_predictions.write_text(
+        json.dumps(
+            [
+                {"image_id": 1, "category_id": 24, "bbox": [30, 0, 10, 10], "score": 0.8},
+                {"image_id": 1, "category_id": 24, "bbox": [60, 0, 10, 10], "score": 0.7},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    mks_predictions.write_text(
+        json.dumps(
+            [{"image_id": 1, "category_id": 24, "bbox": [30, 0, 10, 10], "score": 0.8}]
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "analyze-vehicle-proposals",
+            "--main-predictions",
+            str(main_predictions),
+            "--sph-predictions",
+            str(sph_predictions),
+            "--mks-predictions",
+            str(mks_predictions),
+            "--ground-truth-json",
+            str(truth),
+            "--output-path",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.strip() == str(output)
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["consensus"]["recoverable_tp"] == 1
+
+
 def test_apply_suppression_command_writes_filtered_predictions(tmp_path: Path) -> None:
     predictions = tmp_path / "predictions.json"
     image_map = tmp_path / "image-map.json"

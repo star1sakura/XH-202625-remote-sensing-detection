@@ -57,6 +57,10 @@ from xh_detect.thresholds import (
 )
 from xh_detect.training import export_tensorrt, train_model
 from xh_detect.types import Detection
+from xh_detect.vehicle_confirmation.proposals import (
+    analyze_vehicle_consensus,
+    vehicle_consensus_report_to_dict,
+)
 from xh_detect.visualize import draw_detections
 
 app = typer.Typer(no_args_is_help=True)
@@ -441,6 +445,29 @@ def analyze_complementarity_command(
     except (TypeError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
     _write_json(output_path, complementarity_report_to_dict(report))
+    typer.echo(str(output_path))
+
+
+@app.command("analyze-vehicle-proposals")
+def analyze_vehicle_proposals_command(
+    main_predictions: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    sph_predictions: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    mks_predictions: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    ground_truth_json: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output_path: Annotated[Path, typer.Option()] = Path(
+        "outputs/xh25/vehicle-confirmation/proposal-report.json"
+    ),
+) -> None:
+    taxonomy = get_taxonomy("xh25")
+    try:
+        main_items = load_coco_predictions(main_predictions, taxonomy=taxonomy)
+        sph_items = load_coco_predictions(sph_predictions, taxonomy=taxonomy)
+        mks_items = load_coco_predictions(mks_predictions, taxonomy=taxonomy)
+        truth = load_coco_ground_truth(ground_truth_json, taxonomy=taxonomy)
+        report = analyze_vehicle_consensus(main_items, sph_items, mks_items, truth)
+    except (TypeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    _write_json(output_path, vehicle_consensus_report_to_dict(report))
     typer.echo(str(output_path))
 
 

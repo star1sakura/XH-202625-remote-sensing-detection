@@ -6,8 +6,10 @@ import pytest
 
 from xh_detect.types import Detection, ObjectAnnotation, Polygon4
 from xh_detect.vehicle_confirmation.proposals import (
+    analyze_vehicle_consensus,
     label_vehicle_proposals,
     satisfies_vehicle_fdr,
+    vehicle_consensus_report_to_dict,
 )
 
 
@@ -165,6 +167,54 @@ def test_returns_immutable_tuple() -> None:
 def test_vehicle_fdr_constraint_uses_fused_counts() -> None:
     assert satisfies_vehicle_fdr(55, 14, 4, 1)
     assert not satisfies_vehicle_fdr(55, 14, 3, 1)
+
+
+def test_analyzes_vehicle_proposal_consensus_without_treating_shared_fp_as_tp() -> None:
+    truth = [
+        _truth("img", 0, 0, 10, 10),
+        _truth("img", 30, 0, 40, 10),
+        _truth("img", 60, 0, 70, 10),
+    ]
+    main = [_detection("img", 0.95, 0, 0, 10, 10)]
+    sph = [
+        _detection("img", 0.90, 30, 0, 40, 10),
+        _detection("img", 0.80, 60, 0, 70, 10),
+        _detection("img", 0.70, 90, 0, 100, 10),
+    ]
+    mks = [
+        _detection("img", 0.85, 30, 0, 40, 10),
+        _detection("img", 0.75, 90, 0, 100, 10),
+    ]
+
+    report = analyze_vehicle_consensus(main, sph, mks, truth)
+
+    assert report.sph.recoverable_tp == 2
+    assert report.mks.recoverable_tp == 1
+    assert report.consensus_recoverable_tp == 1
+    assert report.consensus_fp == 1
+    assert report.accepted_sph_indexes == (0, 2)
+    assert report.accepted_mks_indexes == (0, 1)
+    assert not report.historical_fdr_constraint_passed
+    payload = vehicle_consensus_report_to_dict(report)
+    assert payload["sph"]["recoverable_tp"] == 2
+    assert payload["consensus"]["accepted_sph_indexes"] == [0, 2]
+
+
+def test_vehicle_consensus_pairing_is_image_isolated_and_stable() -> None:
+    sph = [
+        _detection("a", 0.9, 0, 0, 10, 10),
+        _detection("a", 0.9, 0, 0, 10, 10),
+    ]
+    mks = [
+        _detection("b", 0.95, 0, 0, 10, 10),
+        _detection("a", 0.8, 0, 0, 10, 10),
+    ]
+
+    report = analyze_vehicle_consensus([], sph, mks, [_truth("a", 0, 0, 10, 10)])
+
+    assert report.accepted_sph_indexes == (0,)
+    assert report.accepted_mks_indexes == (1,)
+    assert report.consensus_recoverable_tp == 1
 
 
 @pytest.mark.parametrize(
