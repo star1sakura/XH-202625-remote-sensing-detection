@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -102,7 +103,10 @@ def _write_dataset(root: Path) -> None:
     report.write_text("{}", encoding="utf-8")
 
 
-def test_cpu_training_writes_checkpoint_and_scores_deterministically(tmp_path: Path) -> None:
+def test_cpu_training_writes_checkpoint_and_scores_deterministically(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     dataset = tmp_path / "dataset"
     output = tmp_path / "output"
     _write_dataset(dataset)
@@ -113,6 +117,7 @@ def test_cpu_training_writes_checkpoint_and_scores_deterministically(tmp_path: P
         seed=42,
         pretrained=False,
     )
+    monkeypatch.delenv("CUBLAS_WORKSPACE_CONFIG", raising=False)
 
     with patch("xh_detect.vehicle_confirmation.model.VehicleConfirmer", _TinyConfirmer):
         checkpoint_path = train_vehicle_confirmer(dataset, output, config, "cpu")
@@ -134,6 +139,7 @@ def test_cpu_training_writes_checkpoint_and_scores_deterministically(tmp_path: P
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     assert {"model_state", "config", "epoch", "holdout_ap", "holdout_bce"} <= checkpoint.keys()
     assert (output / "best.pt.sha256").read_text(encoding="utf-8").strip()
+    assert os.environ["CUBLAS_WORKSPACE_CONFIG"] == ":4096:8"
     assert first == second
     assert (tmp_path / "first.jsonl").read_bytes() == (tmp_path / "second.jsonl").read_bytes()
 

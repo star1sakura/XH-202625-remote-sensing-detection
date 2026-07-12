@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import random
 import subprocess
 from dataclasses import asdict, dataclass
@@ -167,6 +168,7 @@ def _git_commit(root: Path) -> str:
 
 
 def _seed_everything(seed: int) -> None:
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)

@@ -26,3 +26,49 @@ confirmation model.
 The train split is used for proposal diagnostics and threshold selection. The
 validation split stays sealed until the proposal rule and operating point are
 frozen.
+
+## RTX 3090 results
+
+All diagnostics below use only the train split. Validation remained sealed.
+
+### Paired latency gate
+
+- Image: synthetic 10000 x 10000
+- Main median: `1.287953 s`
+- SPH-P2 median: `1.432796 s`
+- Combined median: `2.699695 s`
+- Combined P95: `2.793715 s`
+- Combined maximum: `2.809280 s`
+- Gate: PASS (`2.809280 <= 19.0 s`)
+
+### Proposal diagnostics
+
+- Historical main vehicle: TP `303`, FP `28`
+- SPH-P2: recoverable TP `7`, proposal FP `394`, duplicate-main `301`
+- MKSNet-Lite: recoverable TP `8`, proposal FP `331`, duplicate-main `293`
+- SPH/MKS consensus: recoverable TP `5`, FP `19`
+- Direct consensus FDR gate: FAIL
+
+### Confirmer dataset
+
+- Train: `4` positive, `71` negative
+- Holdout: `3` positive, `22` negative
+- Train manifest SHA256: `63217e630f7d1673b862bca38ceaeaa4d6888b7582d5f941dc47e1fa27b7d498`
+- Holdout manifest SHA256: `97d1b0180e1790ad57d141b63cc7971f74b5d28bdeb061a8a03313551763aede`
+
+### MobileNetV3-Small gate
+
+- Best epoch: `30`
+- Holdout AP: `0.131585`
+- Holdout BCE: `0.549089`
+- Checkpoint SHA256: `cacad457ca9e5819006ff752e93b01d5dd29dbe55f91d36e17b413a912d8dade`
+- Repeated holdout score SHA256: `b5e98c5a76553702613cad6d1fdfd6bbaf76e2f6f21419ad173989d2a0f0a7bc`
+
+The three holdout positives scored `0.387135`, `0.363165`, and `0.217557`.
+The frozen confirmation grid starts at `0.50`, so every allowed point adds zero
+true positives and fails the minimum `+3 TP` gate.
+
+**Decision: RETAIN MAIN.** Do not run validation fusion or promote the vehicle
+confirmation branch. The SPH/MKS models contain complementary vehicle truth,
+but this train set does not contain enough recoverable positives to train a
+reliable second-stage visual confirmer.
