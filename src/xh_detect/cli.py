@@ -29,6 +29,10 @@ from xh_detect.data.hard_negative import (
     build_main_hn_dataset,
 )
 from xh_detect.data.ship_balance import build_ship_balanced_dataset
+from xh_detect.data.vehicle_expert import (
+    VehicleExpertPolicy,
+    build_vehicle_expert_dataset,
+)
 from xh_detect.data.xh25 import prepare_dataset, publish_train_mining_artifacts
 from xh_detect.detector import UltralyticsDetector
 from xh_detect.evaluator import (
@@ -360,6 +364,54 @@ def build_vehicle_confirmer_dataset_command(
                 "train_negative": result.train_negative,
                 "holdout_positive": result.holdout_positive,
                 "holdout_negative": result.holdout_negative,
+            },
+            ensure_ascii=False,
+        )
+    )
+
+
+@app.command("build-vehicle-expert-dataset")
+def build_vehicle_expert_dataset_command(
+    source_root: Annotated[
+        Path,
+        typer.Option(exists=True, file_okay=False),
+    ] = Path("datasets/xh25"),
+    sph_predictions_json: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False),
+    ] = Path("outputs/xh25/vehicle-confirmation/train/sph-predictions.json"),
+    output_root: Annotated[Path, typer.Option()] = Path("datasets/xh25-vehicle-expert"),
+    crop_size: Annotated[int, typer.Option(min=1)] = 512,
+    holdout_ratio: Annotated[float, typer.Option(min=0.001, max=0.999)] = 0.20,
+    max_negatives_per_group: Annotated[int, typer.Option(min=1)] = 8,
+    background_score_floor: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.25,
+    seed: Annotated[int, typer.Option(min=0)] = 42,
+) -> None:
+    try:
+        result = build_vehicle_expert_dataset(
+            source_root,
+            sph_predictions_json,
+            output_root,
+            VehicleExpertPolicy(
+                crop_size=crop_size,
+                holdout_ratio=holdout_ratio,
+                max_negatives_per_group=max_negatives_per_group,
+                background_score_floor=background_score_floor,
+                seed=seed,
+            ),
+        )
+    except (TypeError, ValueError, RuntimeError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(
+        json.dumps(
+            {
+                "output_root": str(result.output_root),
+                "positive_crops": result.positive_crops,
+                "negative_crops": result.negative_crops,
+                "train_crops": result.train_crops,
+                "val_crops": result.val_crops,
+                "train_positive": result.train_positive,
+                "val_positive": result.val_positive,
             },
             ensure_ascii=False,
         )

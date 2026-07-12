@@ -32,6 +32,17 @@ def test_sph_p2_model_yaml_adds_four_scale_detect() -> None:
     assert layers[-1] == [[19, 22, 25, 28], 1, "Detect", ["nc"]]
 
 
+def test_vehicle_expert_sph_p2_model_and_pipeline_are_one_class() -> None:
+    model = _load_model_yaml("configs/models/vehicle-yolo26s-sph-p2.yaml")
+    config = PipelineConfig.from_yaml("configs/vehicle-expert-sph-p2.yaml")
+
+    assert model["nc"] == 1
+    assert _layers(model)[-1] == [[19, 22, 25, 28], 1, "Detect", ["nc"]]
+    assert config.taxonomy == "vehicle1"
+    assert config.model_path == "runs/train/vehicle-expert-sph-p2/weights/best.pt"
+    assert config.class_thresholds == {0: 0.25}
+
+
 def test_sph_p2_pipeline_config_loads() -> None:
     config = PipelineConfig.from_yaml("configs/xh25-sph-p2.yaml")
 

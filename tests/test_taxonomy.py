@@ -55,6 +55,13 @@ def test_legacy3_taxonomy_preserves_its_coarse_names() -> None:
     } == taxonomy.names
 
 
+def test_vehicle_one_class_taxonomy_maps_class_zero_to_vehicle() -> None:
+    taxonomy = get_taxonomy("vehicle1")
+
+    assert taxonomy.names == {0: "vehicle"}
+    assert taxonomy.coarse_name(0) == "vehicle"
+
+
 def test_unknown_taxonomy_raises_value_error() -> None:
     with pytest.raises(ValueError, match="unknown taxonomy"):
         get_taxonomy("unknown")
