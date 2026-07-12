@@ -61,6 +61,10 @@ from xh_detect.vehicle_confirmation.benchmark import (
     benchmark_vehicle_proposal_pair,
     vehicle_latency_report_to_dict,
 )
+from xh_detect.vehicle_confirmation.data import (
+    VehicleCropPolicy,
+    build_vehicle_confirmer_dataset,
+)
 from xh_detect.vehicle_confirmation.proposals import (
     analyze_vehicle_consensus,
     vehicle_consensus_report_to_dict,
@@ -293,6 +297,62 @@ def build_main_hn_xh25_command(
                 "selected_hard_negatives": result.selected_hard_negatives,
                 "rejected_target_overlap": result.rejected_target_overlap,
                 "selected_by_coarse_class": result.selected_by_coarse_class,
+            },
+            ensure_ascii=False,
+        )
+    )
+
+
+@app.command("build-vehicle-confirmer-dataset")
+def build_vehicle_confirmer_dataset_command(
+    source_root: Annotated[
+        Path,
+        typer.Option(exists=True, file_okay=False),
+    ] = Path("datasets/xh25"),
+    main_predictions_json: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False),
+    ] = Path("outputs/xh25/vehicle-confirmation/train/main-predictions.json"),
+    sph_predictions_json: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False),
+    ] = Path("outputs/xh25/vehicle-confirmation/train/sph-predictions.json"),
+    output_root: Annotated[Path, typer.Option()] = Path("datasets/xh25-vehicle-confirmer"),
+    context_scale: Annotated[float, typer.Option(min=0.001)] = 2.0,
+    min_side: Annotated[int, typer.Option(min=1)] = 64,
+    max_side: Annotated[int, typer.Option(min=1)] = 256,
+    output_size: Annotated[int, typer.Option(min=1)] = 160,
+    holdout_ratio: Annotated[float, typer.Option(min=0.001, max=0.999)] = 0.20,
+    seed: Annotated[int, typer.Option(min=0)] = 42,
+) -> None:
+    try:
+        policy = VehicleCropPolicy(
+            context_scale=context_scale,
+            min_side=min_side,
+            max_side=max_side,
+            output_size=output_size,
+            holdout_ratio=holdout_ratio,
+            seed=seed,
+        )
+        result = build_vehicle_confirmer_dataset(
+            source_root,
+            main_predictions_json,
+            sph_predictions_json,
+            output_root,
+            policy,
+        )
+    except (TypeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(
+        json.dumps(
+            {
+                "output_root": str(result.output_root),
+                "train_examples": result.train_examples,
+                "holdout_examples": result.holdout_examples,
+                "train_positive": result.train_positive,
+                "train_negative": result.train_negative,
+                "holdout_positive": result.holdout_positive,
+                "holdout_negative": result.holdout_negative,
             },
             ensure_ascii=False,
         )

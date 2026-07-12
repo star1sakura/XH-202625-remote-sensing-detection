@@ -250,6 +250,66 @@ def test_build_main_hn_xh25_command_forwards_policy(
     assert args[3].seed == 42
 
 
+@patch("xh_detect.cli.build_vehicle_confirmer_dataset")
+def test_build_vehicle_confirmer_dataset_command_forwards_policy(
+    build_dataset: Mock,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "xh25"
+    source.mkdir()
+    main = tmp_path / "main.json"
+    sph = tmp_path / "sph.json"
+    main.write_text("[]", encoding="utf-8")
+    sph.write_text("[]", encoding="utf-8")
+    output = tmp_path / "vehicle-confirmer"
+    build_dataset.return_value = SimpleNamespace(
+        output_root=output,
+        train_examples=80,
+        holdout_examples=20,
+        train_positive=8,
+        train_negative=72,
+        holdout_positive=2,
+        holdout_negative=18,
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "build-vehicle-confirmer-dataset",
+            "--source-root",
+            str(source),
+            "--main-predictions-json",
+            str(main),
+            "--sph-predictions-json",
+            str(sph),
+            "--output-root",
+            str(output),
+            "--context-scale",
+            "2.5",
+            "--min-side",
+            "48",
+            "--max-side",
+            "224",
+            "--output-size",
+            "160",
+            "--holdout-ratio",
+            "0.25",
+            "--seed",
+            "7",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["holdout_positive"] == 2
+    args = build_dataset.call_args.args
+    assert args[:4] == (source, main, sph, output)
+    assert args[4].context_scale == 2.5
+    assert args[4].min_side == 48
+    assert args[4].max_side == 224
+    assert args[4].holdout_ratio == 0.25
+    assert args[4].seed == 7
+
+
 def test_analyze_complementarity_command_writes_pairwise_report(tmp_path: Path) -> None:
     truth = tmp_path / "truth.json"
     main_predictions = tmp_path / "main.json"
