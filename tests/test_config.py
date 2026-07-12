@@ -284,3 +284,16 @@ def test_main_hn_configs_only_change_candidate_weight_path(
     assert config.image_size == 1024
     assert config.class_suppression == {}
     assert set(config.class_thresholds) == set(range(25))
+
+
+def test_historical_main_config_uses_supplied_checkpoint() -> None:
+    config = PipelineConfig.from_yaml(
+        Path(__file__).resolve().parents[1] / "configs" / "xh25-historical-main.yaml"
+    )
+
+    assert config.model_path == "outputs/xh25/historical-main/best.pt"
+    assert config.taxonomy == "xh25"
+    assert config.image_size == 1024
+    assert config.tile_size == 1024
+    assert config.merge_iou == 0.3
+    assert config.class_thresholds == {class_id: 0.25 for class_id in range(25)}
