@@ -20,9 +20,7 @@ def _prediction(image_id: int, score: float, bbox: list[float]) -> dict[str, obj
 def _write_fixture(root: Path) -> tuple[Path, Path]:
     stems = ["a_img", "b_img", "c_img", "d_img"]
     image_map = {stem: index for index, stem in enumerate(stems, start=1)}
-    groups = {
-        stem: {"group": f"group-{stem[0]}", "split": "train"} for stem in stems
-    }
+    groups = {stem: {"group": f"group-{stem[0]}", "split": "train"} for stem in stems}
     for stem in stems:
         image_path = root / "images" / "train" / f"{stem}.jpg"
         image_path.parent.mkdir(parents=True, exist_ok=True)
@@ -50,9 +48,7 @@ def _write_fixture(root: Path) -> tuple[Path, Path]:
     )
     main_path = root.parent / "main.json"
     sph_path = root.parent / "sph.json"
-    main_path.write_text(
-        json.dumps([_prediction(1, 0.95, [70, 70, 10, 10])]), encoding="utf-8"
-    )
+    main_path.write_text(json.dumps([_prediction(1, 0.95, [70, 70, 10, 10])]), encoding="utf-8")
     sph_path.write_text(
         json.dumps(
             [

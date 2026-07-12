@@ -65,6 +65,13 @@ from xh_detect.vehicle_confirmation.data import (
     VehicleCropPolicy,
     build_vehicle_confirmer_dataset,
 )
+from xh_detect.vehicle_confirmation.model import (
+    VehicleConfirmerTrainingConfig,
+    export_vehicle_confirmer_engine,
+    export_vehicle_confirmer_onnx,
+    score_vehicle_confirmer,
+    train_vehicle_confirmer,
+)
 from xh_detect.vehicle_confirmation.proposals import (
     analyze_vehicle_consensus,
     vehicle_consensus_report_to_dict,
@@ -357,6 +364,78 @@ def build_vehicle_confirmer_dataset_command(
             ensure_ascii=False,
         )
     )
+
+
+@app.command("train-vehicle-confirmer")
+def train_vehicle_confirmer_command(
+    dataset_root: Annotated[
+        Path,
+        typer.Option(exists=True, file_okay=False),
+    ] = Path("datasets/xh25-vehicle-confirmer"),
+    output_dir: Annotated[Path, typer.Option()] = Path("outputs/xh25/vehicle-confirmation/model"),
+    epochs: Annotated[int, typer.Option(min=1)] = 30,
+    batch_size: Annotated[int, typer.Option(min=1)] = 64,
+    learning_rate: Annotated[float, typer.Option(min=0.0000001)] = 1e-4,
+    weight_decay: Annotated[float, typer.Option(min=0.0)] = 1e-4,
+    workers: Annotated[int, typer.Option(min=0)] = 4,
+    seed: Annotated[int, typer.Option(min=0)] = 42,
+    pretrained: Annotated[bool, typer.Option()] = True,
+    device: Annotated[str, typer.Option()] = "cuda:0",
+) -> None:
+    config = VehicleConfirmerTrainingConfig(
+        epochs=epochs,
+        batch_size=batch_size,
+        learning_rate=learning_rate,
+        weight_decay=weight_decay,
+        workers=workers,
+        seed=seed,
+        pretrained=pretrained,
+    )
+    try:
+        path = train_vehicle_confirmer(dataset_root, output_dir, config, device)
+    except (TypeError, ValueError, RuntimeError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(str(path))
+
+
+@app.command("score-vehicle-confirmer")
+def score_vehicle_confirmer_command(
+    dataset_root: Annotated[Path, typer.Option(exists=True, file_okay=False)],
+    manifest_path: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    checkpoint_path: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output_path: Annotated[Path, typer.Option()],
+    device: Annotated[str, typer.Option()] = "cuda:0",
+) -> None:
+    try:
+        score_vehicle_confirmer(dataset_root, manifest_path, checkpoint_path, output_path, device)
+    except (TypeError, ValueError, RuntimeError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(str(output_path))
+
+
+@app.command("export-vehicle-confirmer-onnx")
+def export_vehicle_confirmer_onnx_command(
+    checkpoint_path: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output_path: Annotated[Path, typer.Option()],
+    device: Annotated[str, typer.Option()] = "cpu",
+) -> None:
+    try:
+        path = export_vehicle_confirmer_onnx(checkpoint_path, output_path, device)
+    except (TypeError, ValueError, RuntimeError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(str(path))
+
+
+@app.command("export-vehicle-confirmer-engine")
+def export_vehicle_confirmer_engine_command(
+    onnx_path: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    engine_path: Annotated[Path, typer.Option()],
+) -> None:
+    try:
+        path = export_vehicle_confirmer_engine(onnx_path, engine_path)
+    except (TypeError, ValueError, RuntimeError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(str(path))
 
 
 @app.command()
@@ -847,9 +926,7 @@ def benchmark_vehicle_proposals_command(
         Path,
         typer.Option(exists=True, dir_okay=False),
     ] = Path("configs/xh25-sph-p2.yaml"),
-    image_path: Annotated[Path, typer.Option()] = Path(
-        "outputs/benchmark/synthetic-10000.png"
-    ),
+    image_path: Annotated[Path, typer.Option()] = Path("outputs/benchmark/synthetic-10000.png"),
     repeats: Annotated[int, typer.Option(min=1)] = 5,
     reserve_seconds: Annotated[float, typer.Option(min=0.0)] = 1.0,
     limit_seconds: Annotated[float, typer.Option(min=0.001)] = 20.0,

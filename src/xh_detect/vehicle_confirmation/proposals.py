@@ -136,9 +136,7 @@ def label_vehicle_proposals(
         truth_by_index[truth_index] = item
 
     indexed_main = [
-        (index, item)
-        for index, item in enumerate(main_items)
-        if item.class_id == vehicle_class_id
+        (index, item) for index, item in enumerate(main_items) if item.class_id == vehicle_class_id
     ]
     indexed_main.sort(key=lambda pair: (-pair[1].score, pair[0]))
     main_vehicle = tuple(item for _, item in indexed_main)

@@ -310,6 +310,46 @@ def test_build_vehicle_confirmer_dataset_command_forwards_policy(
     assert args[4].seed == 7
 
 
+@patch("xh_detect.cli.train_vehicle_confirmer")
+def test_train_vehicle_confirmer_command_forwards_config(
+    train_confirmer: Mock,
+    tmp_path: Path,
+) -> None:
+    dataset = tmp_path / "dataset"
+    dataset.mkdir()
+    output = tmp_path / "model"
+    train_confirmer.return_value = output / "best.pt"
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "train-vehicle-confirmer",
+            "--dataset-root",
+            str(dataset),
+            "--output-dir",
+            str(output),
+            "--epochs",
+            "2",
+            "--batch-size",
+            "4",
+            "--workers",
+            "0",
+            "--seed",
+            "7",
+            "--no-pretrained",
+            "--device",
+            "cpu",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.strip() == str(output / "best.pt")
+    args = train_confirmer.call_args.args
+    assert args[0] == dataset and args[1] == output and args[3] == "cpu"
+    assert args[2].epochs == 2 and args[2].batch_size == 4
+    assert args[2].seed == 7 and not args[2].pretrained
+
+
 def test_analyze_complementarity_command_writes_pairwise_report(tmp_path: Path) -> None:
     truth = tmp_path / "truth.json"
     main_predictions = tmp_path / "main.json"
@@ -383,9 +423,7 @@ def test_analyze_vehicle_proposals_command_writes_consensus_report(tmp_path: Pat
         encoding="utf-8",
     )
     main_predictions.write_text(
-        json.dumps(
-            [{"image_id": 1, "category_id": 24, "bbox": [0, 0, 10, 10], "score": 0.9}]
-        ),
+        json.dumps([{"image_id": 1, "category_id": 24, "bbox": [0, 0, 10, 10], "score": 0.9}]),
         encoding="utf-8",
     )
     sph_predictions.write_text(
@@ -398,9 +436,7 @@ def test_analyze_vehicle_proposals_command_writes_consensus_report(tmp_path: Pat
         encoding="utf-8",
     )
     mks_predictions.write_text(
-        json.dumps(
-            [{"image_id": 1, "category_id": 24, "bbox": [30, 0, 10, 10], "score": 0.8}]
-        ),
+        json.dumps([{"image_id": 1, "category_id": 24, "bbox": [30, 0, 10, 10], "score": 0.8}]),
         encoding="utf-8",
     )
 
