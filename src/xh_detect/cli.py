@@ -62,6 +62,10 @@ from xh_detect.ranking_thresholds import (
     optimize_ranking_thresholds,
     write_ranking_threshold_artifacts,
 )
+from xh_detect.same_weight_multiscale import (
+    fuse_same_weight_multiscale,
+    load_same_weight_multiscale_policy,
+)
 from xh_detect.taxonomy import get_taxonomy
 from xh_detect.thresholds import (
     DEFAULT_THRESHOLD_GRID_TEXT,
@@ -976,6 +980,50 @@ def fuse_ranking_ensemble_command(
             valid_class_ids=taxonomy.valid_ids,
         )
     except (TypeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(str(output_json))
+
+
+@app.command("fuse-same-weight-multiscale")
+def fuse_same_weight_multiscale_command(
+    predictions_1024: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    predictions_1280: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    predictions_1536: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    image_map_json: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    policy_yaml: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output_json: Annotated[Path, typer.Option()] = Path(
+        "outputs/xh25/same-weight-multiscale/val-predictions.json"
+    ),
+) -> None:
+    image_map = _load_image_id_map(image_map_json)
+    taxonomy = get_taxonomy("xh25")
+    try:
+        fused = fuse_same_weight_multiscale(
+            predictions_1024=_predictions_with_stem_ids(
+                predictions_1024,
+                image_map=image_map,
+                taxonomy_name="xh25",
+            ),
+            predictions_1280=_predictions_with_stem_ids(
+                predictions_1280,
+                image_map=image_map,
+                taxonomy_name="xh25",
+            ),
+            predictions_1536=_predictions_with_stem_ids(
+                predictions_1536,
+                image_map=image_map,
+                taxonomy_name="xh25",
+            ),
+            taxonomy=taxonomy,
+            policy=load_same_weight_multiscale_policy(policy_yaml),
+        )
+        export_coco_results(
+            fused,
+            image_map,
+            output_json,
+            valid_class_ids=taxonomy.valid_ids,
+        )
+    except (OSError, TypeError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
     typer.echo(str(output_json))
 
