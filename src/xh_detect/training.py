@@ -66,6 +66,7 @@ def train_model(
     optimizer: str | None = None,
     learning_rate: float | None = None,
     freeze: int | None = None,
+    save_period: int | None = None,
 ) -> None:
     dataset = _non_empty(dataset_yaml, "dataset_yaml")
     model_source = _non_empty(model_path, "model_path")
@@ -89,6 +90,8 @@ def train_model(
         raise ValueError("learning_rate must be positive")
     if freeze is not None:
         freeze = _non_negative_int(freeze, "freeze")
+    if save_period is not None:
+        save_period = _positive_int(save_period, "save_period")
 
     register_custom_modules()
     model = YOLO(model_source)
@@ -121,6 +124,8 @@ def train_model(
         train_arguments["lr0"] = float(learning_rate)
     if freeze is not None:
         train_arguments["freeze"] = freeze
+    if save_period is not None:
+        train_arguments["save_period"] = save_period
     model.train(
         **train_arguments,
     )

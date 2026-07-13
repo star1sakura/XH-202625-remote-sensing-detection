@@ -1,5 +1,9 @@
 # Seven-Metric Ranking Ensemble
 
+> **Submission status: inadmissible.** The competition submission accepts one
+> model weight, while this experiment runs three independent detector weights.
+> Keep it only as a teacher upper bound for single-student training.
+
 ## Objective
 
 The V1.5 competition document ranks seven signals: aircraft, ship, and
@@ -37,7 +41,7 @@ the competition document.
 | Vehicle FDR | 0.202899 (14 FP) | 0.171429 (12 FP) | improved |
 | Median latency | 1.382013 s | 4.148135 s | regressed |
 
-Summary: **6 improved, 0 tied, 1 regressed; promote.**
+Summary: **6 improved, 0 tied, 1 regressed, but not submission-eligible.**
 
 The ensemble also improves the unranked combined hard-gate metrics:
 
@@ -107,7 +111,9 @@ fusion post-process:
 
 ## Decision
 
-**PROMOTE RANKING ENSEMBLE.** It is the first candidate in this project to
-strictly improve all six class accuracy ranking items over historical main and
-pass every hard gate. Thresholds were selected on the fixed validation split,
-so the official hidden set remains the final generalization check.
+**RETAIN HISTORICAL MAIN FOR SUBMISSION.** The ensemble proves that the saved
+specialists contain enough complementary predictions to improve all six class
+accuracy ranking items, but it violates the single-weight constraint. Use its
+class-specific behavior only to guide a single-student checkpoint. Thresholds
+were selected on the fixed validation split, so the official hidden set remains
+the final generalization check.

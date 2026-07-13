@@ -205,11 +205,13 @@ def test_train_model_forwards_explicit_finetuning_options(yolo_class: Mock) -> N
         optimizer="AdamW",
         learning_rate=1e-4,
         freeze=11,
+        save_period=1,
     )
 
     assert model.train.call_args.kwargs["optimizer"] == "AdamW"
     assert model.train.call_args.kwargs["lr0"] == 1e-4
     assert model.train.call_args.kwargs["freeze"] == 11
+    assert model.train.call_args.kwargs["save_period"] == 1
 
 
 @patch("xh_detect.training.YOLO")
@@ -257,6 +259,7 @@ def test_training_wrappers_validate_arguments(function, args) -> None:
         {"optimizer": ""},
         {"learning_rate": 0},
         {"freeze": -1},
+        {"save_period": 0},
     ],
 )
 def test_train_model_validates_reproducible_options(kwargs: dict[str, object]) -> None:

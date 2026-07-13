@@ -297,3 +297,14 @@ def test_historical_main_config_uses_supplied_checkpoint() -> None:
     assert config.tile_size == 1024
     assert config.merge_iou == 0.3
     assert config.class_thresholds == {class_id: 0.25 for class_id in range(25)}
+
+
+def test_single_student_config_uses_one_checkpoint() -> None:
+    config = PipelineConfig.from_yaml(
+        Path(__file__).resolve().parents[1] / "configs" / "xh25-single-student.yaml"
+    )
+
+    assert config.model_path == "runs/train/xh25-single-student-head/weights/best.pt"
+    assert config.taxonomy == "xh25"
+    assert config.image_size == 1024
+    assert config.class_thresholds == {class_id: 0.25 for class_id in range(25)}

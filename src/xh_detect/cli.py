@@ -578,6 +578,7 @@ def train(
     optimizer: Annotated[str | None, typer.Option()] = None,
     learning_rate: Annotated[float | None, typer.Option(min=0.0000001)] = None,
     freeze: Annotated[int | None, typer.Option(min=0)] = None,
+    save_period: Annotated[int | None, typer.Option(min=1)] = None,
 ) -> None:
     density_options: dict[str, object] = {}
     if density_assignment:
@@ -593,6 +594,8 @@ def train(
         tuning_options["learning_rate"] = learning_rate
     if freeze is not None:
         tuning_options["freeze"] = freeze
+    if save_period is not None:
+        tuning_options["save_period"] = save_period
     train_model(
         str(dataset_yaml),
         model,
