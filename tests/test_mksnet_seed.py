@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import pytest
 import torch
 from torch import nn
 
@@ -10,6 +11,7 @@ from xh_detect.mksnet_seed import (
     MAIN_TO_MKS_LAYER_MAP,
     MKS_IDENTITY_LAYER_INDICES,
     initialize_mksnet_lite_from_main,
+    interpolate_checkpoints,
 )
 from xh_detect.models.mksnet_lite import MKSNetLiteBlock
 
@@ -91,3 +93,41 @@ def test_initialize_mksnet_lite_from_main_refuses_existing_output(tmp_path: Path
         assert "already exists" in str(exc)
     else:
         raise AssertionError("existing output must be rejected")
+
+
+@patch("xh_detect.mksnet_seed.register_custom_modules")
+def test_interpolate_checkpoints_uses_base_model_and_tuned_ema(
+    register_custom_modules: Mock,
+    tmp_path: Path,
+) -> None:
+    base_path = tmp_path / "base.pt"
+    tuned_path = tmp_path / "tuned.pt"
+    output_path = tmp_path / "merged.pt"
+    base = nn.Sequential(nn.Linear(2, 1, bias=False), nn.BatchNorm1d(1))
+    tuned = nn.Sequential(nn.Linear(2, 1, bias=False), nn.BatchNorm1d(1))
+    nn.init.constant_(base[0].weight, 0.0)
+    nn.init.constant_(tuned[0].weight, 2.0)
+    tuned[1].num_batches_tracked.fill_(7)
+    torch.save({"model": base}, base_path)
+    torch.save({"model": None, "ema": tuned}, tuned_path)
+
+    result = interpolate_checkpoints(base_path, tuned_path, output_path, 0.5)
+
+    register_custom_modules.assert_called_once_with()
+    payload = torch.load(output_path, map_location="cpu", weights_only=False)
+    assert torch.equal(payload["model"][0].weight.float(), torch.ones(1, 2))
+    assert payload["model"][1].num_batches_tracked.item() == 7
+    assert payload["ema"] is None
+    assert payload["interpolation"]["alpha"] == 0.5
+    assert result.state_tensors == len(base.state_dict())
+
+
+@pytest.mark.parametrize("alpha", [-0.1, 1.1, float("nan"), True])
+def test_interpolate_checkpoints_rejects_invalid_alpha(alpha: object, tmp_path: Path) -> None:
+    base = tmp_path / "base.pt"
+    tuned = tmp_path / "tuned.pt"
+    base.write_bytes(b"base")
+    tuned.write_bytes(b"tuned")
+
+    with pytest.raises(ValueError, match="alpha"):
+        interpolate_checkpoints(base, tuned, tmp_path / "out.pt", alpha)  # type: ignore[arg-type]

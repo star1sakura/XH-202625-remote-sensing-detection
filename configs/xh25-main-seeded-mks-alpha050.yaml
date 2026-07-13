@@ -1,0 +1,37 @@
+task: detect
+taxonomy: xh25
+model_path: outputs/xh25/single-student/main-seeded-alpha050.pt
+device: "0"
+image_size: 1024
+tile_size: 1024
+overlap: 0.2
+batch_size: 8
+merge_iou: 0.3
+edge_margin: 16
+half: true
+class_thresholds:
+  0: 0.05
+  1: 0.40
+  2: 0.15
+  3: 0.40
+  4: 0.20
+  5: 0.35
+  6: 0.65
+  7: 0.10
+  8: 0.35
+  9: 0.10
+  10: 0.40
+  11: 0.50
+  12: 0.50
+  13: 0.30
+  14: 0.40
+  15: 0.20
+  16: 0.15
+  17: 0.20
+  18: 0.05
+  19: 0.15
+  20: 0.55
+  21: 0.40
+  22: 0.50
+  23: 0.05
+  24: 0.20

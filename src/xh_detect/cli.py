@@ -54,7 +54,7 @@ from xh_detect.evaluator import (
     evaluate as evaluate_detections,
 )
 from xh_detect.exporters import export_coco_results
-from xh_detect.mksnet_seed import initialize_mksnet_lite_from_main
+from xh_detect.mksnet_seed import initialize_mksnet_lite_from_main, interpolate_checkpoints
 from xh_detect.pipeline import InferencePipeline
 from xh_detect.postprocess import suppress_class_detections
 from xh_detect.ranking_ensemble import RankingEnsemblePolicy, fuse_ranking_ensemble
@@ -145,6 +145,41 @@ def init_mksnet_lite_from_main(
             "output_checkpoint": str(result.output_checkpoint),
         }
     )
+    report_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    typer.echo(str(report_path))
+
+
+@app.command("interpolate-checkpoints")
+def interpolate_checkpoints_command(
+    base_checkpoint: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False),
+    ],
+    tuned_checkpoint: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False),
+    ],
+    output_checkpoint: Annotated[Path, typer.Option()],
+    alpha: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.5,
+    overwrite: Annotated[bool, typer.Option()] = False,
+) -> None:
+    try:
+        result = interpolate_checkpoints(
+            base_checkpoint,
+            tuned_checkpoint,
+            output_checkpoint,
+            alpha,
+            overwrite=overwrite,
+        )
+    except (TypeError, ValueError, RuntimeError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    report_path = result.output_checkpoint.with_suffix(".interpolation.json")
+    payload = asdict(result)
+    for name in ("base_checkpoint", "tuned_checkpoint", "output_checkpoint"):
+        payload[name] = str(payload[name])
     report_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
