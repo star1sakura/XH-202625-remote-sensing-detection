@@ -54,6 +54,7 @@ from xh_detect.evaluator import (
     evaluate as evaluate_detections,
 )
 from xh_detect.exporters import export_coco_results
+from xh_detect.mksnet_seed import initialize_mksnet_lite_from_main
 from xh_detect.pipeline import InferencePipeline
 from xh_detect.postprocess import suppress_class_detections
 from xh_detect.ranking_ensemble import RankingEnsemblePolicy, fuse_ranking_ensemble
@@ -109,6 +110,46 @@ def main() -> None:
 @app.command()
 def version() -> None:
     typer.echo(f"xh-detect {__version__}")
+
+
+@app.command("init-mksnet-lite-from-main")
+def init_mksnet_lite_from_main(
+    main_checkpoint: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False),
+    ],
+    model_yaml: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False),
+    ] = Path("configs/models/xh25-yolo26s-mksnet-lite.yaml"),
+    output_checkpoint: Annotated[Path, typer.Option()] = Path(
+        "outputs/xh25/single-student/main-seeded-mksnet-lite.pt"
+    ),
+    overwrite: Annotated[bool, typer.Option()] = False,
+) -> None:
+    try:
+        result = initialize_mksnet_lite_from_main(
+            main_checkpoint,
+            model_yaml,
+            output_checkpoint,
+            overwrite=overwrite,
+        )
+    except (TypeError, ValueError, RuntimeError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    report_path = result.output_checkpoint.with_suffix(".init.json")
+    payload = asdict(result)
+    payload.update(
+        {
+            "source_checkpoint": str(result.source_checkpoint),
+            "target_model_yaml": str(result.target_model_yaml),
+            "output_checkpoint": str(result.output_checkpoint),
+        }
+    )
+    report_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    typer.echo(str(report_path))
 
 
 def _stats_payload(stats: ConversionStats) -> dict[str, object]:
