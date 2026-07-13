@@ -722,6 +722,37 @@ def test_train_command_forwards_pretrained_option(
 
 
 @patch("xh_detect.cli.train_model")
+def test_train_command_forwards_finetuning_options(
+    train_model: Mock,
+    tmp_path: Path,
+) -> None:
+    dataset = tmp_path / "dataset.yaml"
+    dataset.write_text("names: {}", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "train",
+            "--dataset-yaml",
+            str(dataset),
+            "--epochs",
+            "2",
+            "--optimizer",
+            "AdamW",
+            "--learning-rate",
+            "0.0001",
+            "--freeze",
+            "11",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert train_model.call_args.kwargs["optimizer"] == "AdamW"
+    assert train_model.call_args.kwargs["learning_rate"] == 1e-4
+    assert train_model.call_args.kwargs["freeze"] == 11
+
+
+@patch("xh_detect.cli.train_model")
 def test_train_command_forwards_density_assignment_options(
     train_model: Mock,
     tmp_path: Path,

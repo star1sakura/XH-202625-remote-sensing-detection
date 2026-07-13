@@ -193,6 +193,26 @@ def test_train_model_uses_density_aware_trainer_when_enabled(yolo_class: Mock) -
 
 
 @patch("xh_detect.training.YOLO")
+def test_train_model_forwards_explicit_finetuning_options(yolo_class: Mock) -> None:
+    model = yolo_class.return_value
+
+    train_model(
+        "dataset.yaml",
+        "model.yaml",
+        2,
+        1024,
+        "0",
+        optimizer="AdamW",
+        learning_rate=1e-4,
+        freeze=11,
+    )
+
+    assert model.train.call_args.kwargs["optimizer"] == "AdamW"
+    assert model.train.call_args.kwargs["lr0"] == 1e-4
+    assert model.train.call_args.kwargs["freeze"] == 11
+
+
+@patch("xh_detect.training.YOLO")
 def test_export_tensorrt_returns_exported_path(yolo_class: Mock) -> None:
     model = yolo_class.return_value
     model.export.return_value = "runs/model.engine"
@@ -234,6 +254,9 @@ def test_training_wrappers_validate_arguments(function, args) -> None:
         {"project": ""},
         {"name": ""},
         {"resume": "false"},
+        {"optimizer": ""},
+        {"learning_rate": 0},
+        {"freeze": -1},
     ],
 )
 def test_train_model_validates_reproducible_options(kwargs: dict[str, object]) -> None:

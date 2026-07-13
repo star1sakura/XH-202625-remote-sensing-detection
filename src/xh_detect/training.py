@@ -63,6 +63,9 @@ def train_model(
     density_assignment: bool = False,
     density_constant: float = 12.0,
     density_threshold: float = 0.25,
+    optimizer: str | None = None,
+    learning_rate: float | None = None,
+    freeze: int | None = None,
 ) -> None:
     dataset = _non_empty(dataset_yaml, "dataset_yaml")
     model_source = _non_empty(model_path, "model_path")
@@ -77,6 +80,15 @@ def train_model(
     resume = _bool(resume, "resume")
     density_assignment = _bool(density_assignment, "density_assignment")
     pretrained_model = None if pretrained is None else _non_empty(pretrained, "pretrained")
+    optimizer_name = None if optimizer is None else _non_empty(optimizer, "optimizer")
+    if learning_rate is not None and (
+        isinstance(learning_rate, bool)
+        or not isinstance(learning_rate, (int, float))
+        or learning_rate <= 0
+    ):
+        raise ValueError("learning_rate must be positive")
+    if freeze is not None:
+        freeze = _non_negative_int(freeze, "freeze")
 
     register_custom_modules()
     model = YOLO(model_source)
@@ -103,6 +115,12 @@ def train_model(
             threshold=density_threshold,
         )
         train_arguments["trainer"] = DensityAwareDetectionTrainer
+    if optimizer_name is not None:
+        train_arguments["optimizer"] = optimizer_name
+    if learning_rate is not None:
+        train_arguments["lr0"] = float(learning_rate)
+    if freeze is not None:
+        train_arguments["freeze"] = freeze
     model.train(
         **train_arguments,
     )

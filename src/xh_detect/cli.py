@@ -516,6 +516,9 @@ def train(
     density_assignment: Annotated[bool, typer.Option()] = False,
     density_constant: Annotated[float, typer.Option(min=0.001)] = 12.0,
     density_threshold: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.25,
+    optimizer: Annotated[str | None, typer.Option()] = None,
+    learning_rate: Annotated[float | None, typer.Option(min=0.0000001)] = None,
+    freeze: Annotated[int | None, typer.Option(min=0)] = None,
 ) -> None:
     density_options: dict[str, object] = {}
     if density_assignment:
@@ -524,6 +527,13 @@ def train(
             "density_constant": density_constant,
             "density_threshold": density_threshold,
         }
+    tuning_options: dict[str, object] = {}
+    if optimizer is not None:
+        tuning_options["optimizer"] = optimizer
+    if learning_rate is not None:
+        tuning_options["learning_rate"] = learning_rate
+    if freeze is not None:
+        tuning_options["freeze"] = freeze
     train_model(
         str(dataset_yaml),
         model,
@@ -538,6 +548,7 @@ def train(
         resume=resume,
         pretrained=pretrained,
         **density_options,
+        **tuning_options,
     )
 
 
