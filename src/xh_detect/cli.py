@@ -57,6 +57,10 @@ from xh_detect.exporters import export_coco_results
 from xh_detect.pipeline import InferencePipeline
 from xh_detect.postprocess import suppress_class_detections
 from xh_detect.ranking_ensemble import RankingEnsemblePolicy, fuse_ranking_ensemble
+from xh_detect.ranking_thresholds import (
+    optimize_ranking_thresholds,
+    write_ranking_threshold_artifacts,
+)
 from xh_detect.taxonomy import get_taxonomy
 from xh_detect.thresholds import (
     DEFAULT_THRESHOLD_GRID_TEXT,
@@ -1087,6 +1091,36 @@ def optimize_thresholds_command(
     except (TypeError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
     typer.echo(str(output_dir / "report.json"))
+
+
+@app.command("optimize-ranking-thresholds")
+def optimize_ranking_thresholds_command(
+    predictions_json: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    ground_truth_json: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    baseline_report: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output_dir: Annotated[Path, typer.Option()] = Path(
+        "outputs/xh25/single-student/ranking-thresholds"
+    ),
+    thresholds: Annotated[str, typer.Option()] = (
+        "0.05,0.10,0.15,0.20,0.25,0.30,0.35,0.40,0.45,0.50,"
+        "0.55,0.60,0.65,0.70,0.75,0.80,0.85,0.90,0.95"
+    ),
+    passes: Annotated[int, typer.Option(min=1)] = 2,
+) -> None:
+    taxonomy = get_taxonomy("xh25")
+    try:
+        result = optimize_ranking_thresholds(
+            load_coco_predictions(predictions_json, taxonomy=taxonomy),
+            load_coco_ground_truth(ground_truth_json, taxonomy=taxonomy),
+            baseline=load_evaluation_report(baseline_report),
+            taxonomy=taxonomy,
+            thresholds=thresholds,
+            passes=passes,
+        )
+        paths = write_ranking_threshold_artifacts(result, output_dir=output_dir)
+    except (TypeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(str(paths["summary"]))
 
 
 @app.command("compare-experiments")
