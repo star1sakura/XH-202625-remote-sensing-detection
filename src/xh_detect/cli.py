@@ -27,6 +27,10 @@ from xh_detect.complementarity import (
 )
 from xh_detect.config import PipelineConfig
 from xh_detect.data.dota import ConversionStats, convert_split, write_dataset_yaml
+from xh_detect.data.hard_example import (
+    HardExamplePolicy,
+    build_hard_example_dataset,
+)
 from xh_detect.data.hard_negative import (
     HardNegativePolicy,
     build_main_hn_dataset,
@@ -316,6 +320,57 @@ def build_main_hn_xh25_command(
                 "selected_hard_negatives": result.selected_hard_negatives,
                 "rejected_target_overlap": result.rejected_target_overlap,
                 "selected_by_coarse_class": result.selected_by_coarse_class,
+            },
+            ensure_ascii=False,
+        )
+    )
+
+
+@app.command("build-hard-example-xh25")
+def build_hard_example_xh25_command(
+    source_root: Annotated[
+        Path,
+        typer.Option(exists=True, file_okay=False),
+    ] = Path("datasets/xh25"),
+    predictions_json: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False),
+    ] = Path("outputs/xh25/single-student/mks-train-predictions.json"),
+    output_root: Annotated[Path, typer.Option()] = Path("datasets/xh25-hard-example"),
+    crop_size: Annotated[int, typer.Option(min=1)] = 768,
+    background_score_floor: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.60,
+    max_positive_crops_per_group: Annotated[int, typer.Option(min=1)] = 8,
+    max_negative_crops_per_group: Annotated[int, typer.Option(min=1)] = 2,
+    vehicle_positive_multiplier: Annotated[int, typer.Option(min=1)] = 2,
+    seed: Annotated[int, typer.Option(min=0)] = 42,
+) -> None:
+    try:
+        policy = HardExamplePolicy(
+            crop_size=crop_size,
+            background_score_floor=background_score_floor,
+            max_positive_crops_per_group=max_positive_crops_per_group,
+            max_negative_crops_per_group=max_negative_crops_per_group,
+            vehicle_positive_multiplier=vehicle_positive_multiplier,
+            seed=seed,
+        )
+        result = build_hard_example_dataset(
+            source_root,
+            predictions_json,
+            output_root,
+            policy,
+        )
+    except (TypeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(
+        json.dumps(
+            {
+                "output_root": str(result.output_root),
+                "original_train_images": result.original_train_images,
+                "hard_positive_crops": result.hard_positive_crops,
+                "hard_negative_crops": result.hard_negative_crops,
+                "missed_truth_by_coarse_class": result.missed_truth_by_coarse_class,
+                "selected_positive_by_coarse_class": (result.selected_positive_by_coarse_class),
+                "selected_negative_by_coarse_class": (result.selected_negative_by_coarse_class),
             },
             ensure_ascii=False,
         )
