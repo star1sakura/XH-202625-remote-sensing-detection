@@ -7,6 +7,7 @@ import pytest
 
 from xh_detect.competition import (
     build_competition_proxy,
+    build_seven_metric_comparison,
     load_evaluation_report,
     render_competition_proxy_markdown,
     write_competition_proxy_artifacts,
@@ -79,6 +80,47 @@ def test_build_competition_proxy_fails_timing_when_accuracy_passes() -> None:
 def test_build_competition_proxy_rejects_negative_latency() -> None:
     with pytest.raises(ValueError, match="latency_seconds"):
         build_competition_proxy(_report(), experiment_name="bad", latency_seconds=-0.1)
+
+
+def test_seven_metric_comparison_requires_six_strict_improvements() -> None:
+    baseline = EvaluationReport(
+        overall_class_agnostic=Metrics(3102, 120, 124),
+        by_coarse_class={
+            "aircraft": Metrics(2716, 44, 30),
+            "ship": Metrics(331, 62, 71),
+            "vehicle": Metrics(55, 14, 23),
+        },
+        by_fine_class={},
+        by_image={},
+    )
+    experiment = EvaluationReport(
+        overall_class_agnostic=Metrics(3116, 114, 110),
+        by_coarse_class={
+            "aircraft": Metrics(2721, 39, 25),
+            "ship": Metrics(336, 60, 66),
+            "vehicle": Metrics(59, 15, 19),
+        },
+        by_fine_class={},
+        by_image={},
+    )
+
+    comparison = build_seven_metric_comparison(
+        baseline,
+        experiment,
+        baseline_latency_seconds=1.3,
+        experiment_latency_seconds=4.0,
+    )
+
+    assert comparison["summary"] == {
+        "improved": 6,
+        "tied": 0,
+        "regressed": 1,
+        "at_least_six_improved": True,
+        "hard_gates_passed": True,
+        "recommendation": "promote",
+    }
+    assert comparison["metrics"]["vehicle_fdr"]["status"] == "improved"
+    assert comparison["metrics"]["timeliness_seconds"]["status"] == "regressed"
 
 
 def test_load_evaluation_report_round_trips_report_to_dict(tmp_path: Path) -> None:

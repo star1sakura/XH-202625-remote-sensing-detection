@@ -229,3 +229,136 @@ def write_competition_proxy_artifacts(
     )
     markdown_path.write_text(render_competition_proxy_markdown(proxy), encoding="utf-8")
     return {"json": json_path, "markdown": markdown_path}
+
+
+def build_seven_metric_comparison(
+    baseline: EvaluationReport,
+    experiment: EvaluationReport,
+    *,
+    baseline_latency_seconds: float,
+    experiment_latency_seconds: float,
+) -> dict[str, object]:
+    baseline_latency = _validate_latency(baseline_latency_seconds)
+    experiment_latency = _validate_latency(experiment_latency_seconds)
+    assert baseline_latency is not None
+    assert experiment_latency is not None
+    missing = [
+        group
+        for group in COARSE_GROUPS
+        if group not in baseline.by_coarse_class or group not in experiment.by_coarse_class
+    ]
+    if missing:
+        raise ValueError("missing coarse groups: " + ", ".join(missing))
+
+    rows: dict[str, dict[str, object]] = {}
+    for group in ("aircraft", "ship", "vehicle"):
+        baseline_metrics = baseline.by_coarse_class[group]
+        experiment_metrics = experiment.by_coarse_class[group]
+        for metric_name, lower_is_better in (("recall", False), ("fdr", True)):
+            baseline_value = float(getattr(baseline_metrics, metric_name))
+            experiment_value = float(getattr(experiment_metrics, metric_name))
+            if math.isclose(baseline_value, experiment_value, rel_tol=0.0, abs_tol=1e-12):
+                status = "tied"
+            elif (experiment_value < baseline_value) == lower_is_better:
+                status = "improved"
+            else:
+                status = "regressed"
+            rows[f"{group}_{metric_name}"] = {
+                "baseline": baseline_value,
+                "experiment": experiment_value,
+                "delta": experiment_value - baseline_value,
+                "lower_is_better": lower_is_better,
+                "status": status,
+            }
+
+    if math.isclose(baseline_latency, experiment_latency, rel_tol=0.0, abs_tol=1e-12):
+        latency_status = "tied"
+    elif experiment_latency < baseline_latency:
+        latency_status = "improved"
+    else:
+        latency_status = "regressed"
+    rows["timeliness_seconds"] = {
+        "baseline": baseline_latency,
+        "experiment": experiment_latency,
+        "delta": experiment_latency - baseline_latency,
+        "lower_is_better": True,
+        "status": latency_status,
+    }
+    improved_count = sum(row["status"] == "improved" for row in rows.values())
+    experiment_proxy = build_competition_proxy(
+        experiment,
+        experiment_name="seven-metric-candidate",
+        latency_seconds=experiment_latency,
+    )
+    gates_passed = all(
+        gate["passed"] is True
+        for gate in experiment_proxy["hard_gates"].values()
+        if isinstance(gate, Mapping)
+    )
+    return {
+        "metrics": rows,
+        "summary": {
+            "improved": improved_count,
+            "tied": sum(row["status"] == "tied" for row in rows.values()),
+            "regressed": sum(row["status"] == "regressed" for row in rows.values()),
+            "at_least_six_improved": improved_count >= 6,
+            "hard_gates_passed": gates_passed,
+            "recommendation": (
+                "promote" if improved_count >= 6 and gates_passed else "retain_baseline"
+            ),
+        },
+    }
+
+
+def render_seven_metric_comparison_markdown(comparison: Mapping[str, object]) -> str:
+    metrics = comparison.get("metrics")
+    summary = comparison.get("summary")
+    if not isinstance(metrics, Mapping) or not isinstance(summary, Mapping):
+        raise ValueError("seven-metric comparison is malformed")
+    lines = [
+        "# Seven-Metric Competition Comparison",
+        "",
+        f"- Improved: {summary['improved']} / 7",
+        f"- Hard gates passed: {summary['hard_gates_passed']}",
+        f"- Recommendation: `{summary['recommendation']}`",
+        "",
+        "| Metric | Baseline | Experiment | Delta | Status |",
+        "| --- | ---: | ---: | ---: | --- |",
+    ]
+    for name, raw_row in metrics.items():
+        if not isinstance(raw_row, Mapping):
+            raise ValueError("seven-metric row is malformed")
+        lines.append(
+            f"| {name} | {_fmt(raw_row['baseline'])} | {_fmt(raw_row['experiment'])} | "
+            f"{_fmt(raw_row['delta'])} | {raw_row['status']} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def write_seven_metric_comparison_artifacts(
+    baseline: EvaluationReport,
+    experiment: EvaluationReport,
+    *,
+    baseline_latency_seconds: float,
+    experiment_latency_seconds: float,
+    output_dir: Path,
+) -> dict[str, Path]:
+    comparison = build_seven_metric_comparison(
+        baseline,
+        experiment,
+        baseline_latency_seconds=baseline_latency_seconds,
+        experiment_latency_seconds=experiment_latency_seconds,
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "seven-metric-comparison.json"
+    markdown_path = output_dir / "seven-metric-comparison.md"
+    json_path.write_text(
+        json.dumps(comparison, ensure_ascii=False, indent=2, allow_nan=False),
+        encoding="utf-8",
+    )
+    markdown_path.write_text(
+        render_seven_metric_comparison_markdown(comparison),
+        encoding="utf-8",
+    )
+    return {"json": json_path, "markdown": markdown_path}

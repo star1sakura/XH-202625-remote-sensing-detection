@@ -5,6 +5,7 @@ import platform
 from collections.abc import Mapping
 from dataclasses import asdict
 from pathlib import Path
+from time import perf_counter
 from typing import Annotated
 
 import cv2
@@ -13,10 +14,12 @@ import typer
 import ultralytics
 
 from xh_detect import __version__
+from xh_detect.benchmark import summarize_durations
 from xh_detect.compare import compare_experiments
 from xh_detect.competition import (
     load_evaluation_report,
     write_competition_proxy_artifacts,
+    write_seven_metric_comparison_artifacts,
 )
 from xh_detect.complementarity import (
     analyze_complementarity,
@@ -49,6 +52,7 @@ from xh_detect.evaluator import (
 from xh_detect.exporters import export_coco_results
 from xh_detect.pipeline import InferencePipeline
 from xh_detect.postprocess import suppress_class_detections
+from xh_detect.ranking_ensemble import RankingEnsemblePolicy, fuse_ranking_ensemble
 from xh_detect.taxonomy import get_taxonomy
 from xh_detect.thresholds import (
     DEFAULT_THRESHOLD_GRID_TEXT,
@@ -747,6 +751,91 @@ def apply_suppression_command(
     typer.echo(str(output_json))
 
 
+def _predictions_with_stem_ids(
+    predictions_json: Path,
+    *,
+    image_map: Mapping[str, int],
+    taxonomy_name: str,
+) -> list[Detection]:
+    taxonomy = get_taxonomy(taxonomy_name)
+    stem_by_id = {str(image_id): stem for stem, image_id in image_map.items()}
+    loaded = load_coco_predictions(predictions_json, taxonomy=taxonomy)
+    try:
+        return [
+            Detection(
+                image_id=stem_by_id[item.image_id],
+                class_id=item.class_id,
+                score=item.score,
+                polygon=item.polygon,
+            )
+            for item in loaded
+        ]
+    except KeyError as exc:
+        message = f"prediction image_id is missing from image map: {exc.args[0]}"
+        raise typer.BadParameter(message) from exc
+
+
+@app.command("fuse-ranking-ensemble")
+def fuse_ranking_ensemble_command(
+    aircraft_predictions: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    ship_predictions: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    vehicle_primary_predictions: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    vehicle_supplement_predictions: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    image_map_json: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output_json: Annotated[Path, typer.Option()] = Path(
+        "outputs/xh25/ranking-ensemble/val-predictions.json"
+    ),
+    aircraft_threshold: Annotated[float, typer.Option()] = 0.25,
+    ship_threshold: Annotated[float, typer.Option()] = 0.31,
+    vehicle_primary_threshold: Annotated[float, typer.Option()] = 0.25,
+    vehicle_supplement_threshold: Annotated[float, typer.Option()] = 0.64,
+    vehicle_duplicate_iou: Annotated[float, typer.Option()] = 0.30,
+) -> None:
+    image_map = _load_image_id_map(image_map_json)
+    taxonomy = get_taxonomy("xh25")
+    try:
+        policy = RankingEnsemblePolicy(
+            aircraft_threshold=aircraft_threshold,
+            ship_threshold=ship_threshold,
+            vehicle_primary_threshold=vehicle_primary_threshold,
+            vehicle_supplement_threshold=vehicle_supplement_threshold,
+            vehicle_duplicate_iou=vehicle_duplicate_iou,
+        )
+        fused = fuse_ranking_ensemble(
+            aircraft_predictions=_predictions_with_stem_ids(
+                aircraft_predictions,
+                image_map=image_map,
+                taxonomy_name="xh25",
+            ),
+            ship_predictions=_predictions_with_stem_ids(
+                ship_predictions,
+                image_map=image_map,
+                taxonomy_name="xh25",
+            ),
+            vehicle_primary_predictions=_predictions_with_stem_ids(
+                vehicle_primary_predictions,
+                image_map=image_map,
+                taxonomy_name="xh25",
+            ),
+            vehicle_supplement_predictions=_predictions_with_stem_ids(
+                vehicle_supplement_predictions,
+                image_map=image_map,
+                taxonomy_name="xh25",
+            ),
+            taxonomy=taxonomy,
+            policy=policy,
+        )
+        export_coco_results(
+            fused,
+            image_map,
+            output_json,
+            valid_class_ids=taxonomy.valid_ids,
+        )
+    except (TypeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(str(output_json))
+
+
 @app.command("audit-false-positives")
 def audit_false_positives_command(
     predictions_json: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
@@ -979,6 +1068,27 @@ def compare_experiments_command(
     typer.echo(json.dumps(comparison["overall"], ensure_ascii=False, allow_nan=False))
 
 
+@app.command("compare-seven-metrics")
+def compare_seven_metrics_command(
+    baseline_report: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    experiment_report: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    baseline_latency_seconds: Annotated[float, typer.Option(min=0.0)],
+    experiment_latency_seconds: Annotated[float, typer.Option(min=0.0)],
+    output_dir: Annotated[Path, typer.Option()] = Path("outputs/xh25/ranking-ensemble"),
+) -> None:
+    try:
+        paths = write_seven_metric_comparison_artifacts(
+            load_evaluation_report(baseline_report),
+            load_evaluation_report(experiment_report),
+            baseline_latency_seconds=baseline_latency_seconds,
+            experiment_latency_seconds=experiment_latency_seconds,
+            output_dir=output_dir,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(str(paths["json"]))
+
+
 @app.command()
 def serve(
     config_path: Annotated[
@@ -1010,6 +1120,100 @@ def benchmark(
     pipeline = InferencePipeline(detector, config, cache_root=None)
     summary = benchmark_pipeline(pipeline, image, image_path.stem, repeats)
     typer.echo(json.dumps(summary, allow_nan=False))
+
+
+def _timing_payload(samples: list[float]) -> dict[str, object]:
+    summary = summarize_durations(samples)
+    return {
+        "samples_s": samples,
+        "median_s": summary["median_s"],
+        "p95_s": summary["p95_s"],
+        "maximum_s": max(samples),
+    }
+
+
+@app.command("benchmark-ranking-ensemble")
+def benchmark_ranking_ensemble_command(
+    primary_config_path: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False),
+    ] = Path("configs/xh25-mksnet-lite.yaml"),
+    ship_config_path: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False),
+    ] = Path("configs/xh25-sph-p2-nam.yaml"),
+    vehicle_supplement_config_path: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False),
+    ] = Path("configs/xh25-sph-p2.yaml"),
+    image_path: Annotated[Path, typer.Option()] = Path("outputs/benchmark/synthetic-10000.png"),
+    repeats: Annotated[int, typer.Option(min=1)] = 5,
+    output_path: Annotated[Path, typer.Option()] = Path(
+        "outputs/xh25/ranking-ensemble/benchmark.json"
+    ),
+) -> None:
+    if not image_path.exists():
+        create_synthetic_image(image_path)
+    image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+    if image is None:
+        raise typer.BadParameter(f"cannot read benchmark image: {image_path}")
+
+    primary_config = PipelineConfig.from_yaml(primary_config_path)
+    ship_config = PipelineConfig.from_yaml(ship_config_path)
+    supplement_config = PipelineConfig.from_yaml(vehicle_supplement_config_path)
+    if {primary_config.taxonomy, ship_config.taxonomy, supplement_config.taxonomy} != {"xh25"}:
+        raise typer.BadParameter("all ranking ensemble configs must use the xh25 taxonomy")
+    primary = InferencePipeline(_build_detector(primary_config), primary_config, cache_root=None)
+    ship = InferencePipeline(_build_detector(ship_config), ship_config, cache_root=None)
+    supplement = InferencePipeline(
+        _build_detector(supplement_config),
+        supplement_config,
+        cache_root=None,
+    )
+    policy = RankingEnsemblePolicy()
+    taxonomy = get_taxonomy("xh25")
+    for name, pipeline in (
+        ("primary", primary),
+        ("ship", ship),
+        ("vehicle-supplement", supplement),
+    ):
+        pipeline.run(image, f"{image_path.stem}-{name}-warmup")
+
+    primary_samples: list[float] = []
+    ship_samples: list[float] = []
+    supplement_samples: list[float] = []
+    combined_samples: list[float] = []
+    for index in range(repeats):
+        image_id = f"{image_path.stem}-{index}"
+        started = perf_counter()
+        primary_result = primary.run(image, image_id)
+        ship_result = ship.run(image, image_id)
+        supplement_result = supplement.run(image, image_id)
+        fuse_ranking_ensemble(
+            aircraft_predictions=primary_result.detections,
+            ship_predictions=ship_result.detections,
+            vehicle_primary_predictions=primary_result.detections,
+            vehicle_supplement_predictions=supplement_result.detections,
+            taxonomy=taxonomy,
+            policy=policy,
+        )
+        combined_samples.append(perf_counter() - started)
+        primary_samples.append(primary_result.timings.total_s)
+        ship_samples.append(ship_result.timings.total_s)
+        supplement_samples.append(supplement_result.timings.total_s)
+
+    payload = {
+        "primary": _timing_payload(primary_samples),
+        "ship": _timing_payload(ship_samples),
+        "vehicle_supplement": _timing_payload(supplement_samples),
+        "combined": _timing_payload(combined_samples),
+        "gate": {
+            "limit_seconds": 20.0,
+            "passed": all(sample <= 20.0 for sample in combined_samples),
+        },
+    }
+    _write_json(output_path, payload)
+    typer.echo(str(output_path))
 
 
 @app.command("benchmark-vehicle-proposals")
