@@ -27,6 +27,7 @@ class VehicleExpertPolicy:
     holdout_ratio: float = 0.20
     max_negatives_per_group: int = 8
     background_score_floor: float = 0.25
+    negative_to_positive_ratio: float = 1.0
     seed: int = 42
 
     def __post_init__(self) -> None:
@@ -48,6 +49,13 @@ class VehicleExpertPolicy:
             or not 0.0 <= self.background_score_floor <= 1.0
         ):
             raise ValueError("background_score_floor must be finite and within [0, 1]")
+        if (
+            isinstance(self.negative_to_positive_ratio, bool)
+            or not isinstance(self.negative_to_positive_ratio, (int, float))
+            or not math.isfinite(self.negative_to_positive_ratio)
+            or self.negative_to_positive_ratio < 0.0
+        ):
+            raise ValueError("negative_to_positive_ratio must be finite and non-negative")
         if isinstance(self.seed, bool) or not isinstance(self.seed, int) or self.seed < 0:
             raise ValueError("seed must be a non-negative integer")
 
@@ -176,6 +184,17 @@ def _center(box: HBB) -> tuple[float, float]:
     return (box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0
 
 
+def _background_center(stem: str, width: int, height: int, policy: VehicleExpertPolicy):
+    digest = hashlib.sha256(f"{policy.seed}:background:{stem}".encode()).digest()
+    crop_width = min(policy.crop_size, width)
+    crop_height = min(policy.crop_size, height)
+    left_range = width - crop_width
+    top_range = height - crop_height
+    left = int.from_bytes(digest[:8], "big") % (left_range + 1)
+    top = int.from_bytes(digest[8:16], "big") % (top_range + 1)
+    return left + crop_width / 2.0, top + crop_height / 2.0
+
+
 def _yolo_labels(truth: list[ObjectAnnotation], crop: HBB) -> str:
     crop_width = crop[2] - crop[0]
     crop_height = crop[3] - crop[1]
@@ -300,6 +319,29 @@ def build_vehicle_expert_dataset(
             )
         )
         negative_group_counts[group] += 1
+
+    target_negatives = math.ceil(len(positives) * policy.negative_to_positive_ratio)
+    background_stems = sorted(
+        (stem for stem in group_by_stem if not truth_by_image.get(str(stem_to_id[stem]))),
+        key=lambda stem: hashlib.sha256(f"{policy.seed}:fill:{stem}".encode()).hexdigest(),
+    )
+    for fill_index, stem in enumerate(background_stems):
+        if len(negatives) >= target_negatives:
+            break
+        group = group_by_stem[stem]
+        image = image_for(stem)
+        height, width = image.shape[:2]
+        negatives.append(
+            _CropCandidate(
+                str(stem_to_id[stem]),
+                stem,
+                group,
+                1_000_000 + fill_index,
+                _background_center(stem, width, height, policy),
+                False,
+                0.0,
+            )
+        )
 
     candidates = positives + negatives
     output_root.parent.mkdir(parents=True, exist_ok=True)

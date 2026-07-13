@@ -69,7 +69,12 @@ def test_builds_one_class_positive_and_hard_negative_crops(tmp_path: Path) -> No
         source,
         predictions,
         output,
-        VehicleExpertPolicy(crop_size=64, holdout_ratio=0.5, max_negatives_per_group=2),
+        VehicleExpertPolicy(
+            crop_size=64,
+            holdout_ratio=0.5,
+            max_negatives_per_group=2,
+            negative_to_positive_ratio=0.5,
+        ),
     )
 
     labels = sorted((output / "labels").rglob("*.txt"))
@@ -110,9 +115,10 @@ def test_vehicle_expert_dataset_is_seed_deterministic(tmp_path: Path) -> None:
     second = tmp_path / "second"
     policy = VehicleExpertPolicy(crop_size=64, holdout_ratio=0.5, seed=7)
 
-    build_vehicle_expert_dataset(source, predictions, first, policy)
+    first_result = build_vehicle_expert_dataset(source, predictions, first, policy)
     build_vehicle_expert_dataset(source, predictions, second, policy)
 
+    assert first_result.negative_crops == first_result.positive_crops
     assert (first / "manifests" / "source-groups.json").read_bytes() == (
         second / "manifests" / "source-groups.json"
     ).read_bytes()

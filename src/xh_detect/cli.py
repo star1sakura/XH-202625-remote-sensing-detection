@@ -389,6 +389,7 @@ def build_vehicle_expert_dataset_command(
     holdout_ratio: Annotated[float, typer.Option(min=0.001, max=0.999)] = 0.20,
     max_negatives_per_group: Annotated[int, typer.Option(min=1)] = 8,
     background_score_floor: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.25,
+    negative_to_positive_ratio: Annotated[float, typer.Option(min=0.0)] = 1.0,
     seed: Annotated[int, typer.Option(min=0)] = 42,
 ) -> None:
     try:
@@ -401,6 +402,7 @@ def build_vehicle_expert_dataset_command(
                 holdout_ratio=holdout_ratio,
                 max_negatives_per_group=max_negatives_per_group,
                 background_score_floor=background_score_floor,
+                negative_to_positive_ratio=negative_to_positive_ratio,
                 seed=seed,
             ),
         )
