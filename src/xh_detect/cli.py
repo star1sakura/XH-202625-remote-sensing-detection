@@ -624,6 +624,8 @@ def train(
     learning_rate: Annotated[float | None, typer.Option(min=0.0000001)] = None,
     freeze: Annotated[int | None, typer.Option(min=0)] = None,
     save_period: Annotated[int | None, typer.Option(min=1)] = None,
+    warmup_epochs: Annotated[float | None, typer.Option(min=0.0)] = None,
+    warmup_bias_lr: Annotated[float | None, typer.Option(min=0.0)] = None,
 ) -> None:
     density_options: dict[str, object] = {}
     if density_assignment:
@@ -641,6 +643,10 @@ def train(
         tuning_options["freeze"] = freeze
     if save_period is not None:
         tuning_options["save_period"] = save_period
+    if warmup_epochs is not None:
+        tuning_options["warmup_epochs"] = warmup_epochs
+    if warmup_bias_lr is not None:
+        tuning_options["warmup_bias_lr"] = warmup_bias_lr
     train_model(
         str(dataset_yaml),
         model,

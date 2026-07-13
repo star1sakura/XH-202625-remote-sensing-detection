@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from ultralytics import YOLO
@@ -67,6 +68,8 @@ def train_model(
     learning_rate: float | None = None,
     freeze: int | None = None,
     save_period: int | None = None,
+    warmup_epochs: float | None = None,
+    warmup_bias_lr: float | None = None,
 ) -> None:
     dataset = _non_empty(dataset_yaml, "dataset_yaml")
     model_source = _non_empty(model_path, "model_path")
@@ -92,6 +95,17 @@ def train_model(
         freeze = _non_negative_int(freeze, "freeze")
     if save_period is not None:
         save_period = _positive_int(save_period, "save_period")
+    for value, option in (
+        (warmup_epochs, "warmup_epochs"),
+        (warmup_bias_lr, "warmup_bias_lr"),
+    ):
+        if value is not None and (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value < 0
+        ):
+            raise ValueError(f"{option} must be finite and non-negative")
 
     register_custom_modules()
     model = YOLO(model_source)
@@ -126,6 +140,10 @@ def train_model(
         train_arguments["freeze"] = freeze
     if save_period is not None:
         train_arguments["save_period"] = save_period
+    if warmup_epochs is not None:
+        train_arguments["warmup_epochs"] = float(warmup_epochs)
+    if warmup_bias_lr is not None:
+        train_arguments["warmup_bias_lr"] = float(warmup_bias_lr)
     model.train(
         **train_arguments,
     )

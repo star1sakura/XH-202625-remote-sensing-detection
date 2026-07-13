@@ -206,12 +206,16 @@ def test_train_model_forwards_explicit_finetuning_options(yolo_class: Mock) -> N
         learning_rate=1e-4,
         freeze=11,
         save_period=1,
+        warmup_epochs=0.0,
+        warmup_bias_lr=0.0,
     )
 
     assert model.train.call_args.kwargs["optimizer"] == "AdamW"
     assert model.train.call_args.kwargs["lr0"] == 1e-4
     assert model.train.call_args.kwargs["freeze"] == 11
     assert model.train.call_args.kwargs["save_period"] == 1
+    assert model.train.call_args.kwargs["warmup_epochs"] == 0.0
+    assert model.train.call_args.kwargs["warmup_bias_lr"] == 0.0
 
 
 @patch("xh_detect.training.YOLO")
