@@ -308,3 +308,14 @@ def test_single_student_config_uses_one_checkpoint() -> None:
     assert config.taxonomy == "xh25"
     assert config.image_size == 1024
     assert config.class_thresholds == {class_id: 0.25 for class_id in range(25)}
+
+
+def test_single_student_search_config_keeps_low_score_predictions() -> None:
+    config = PipelineConfig.from_yaml(
+        Path(__file__).resolve().parents[1]
+        / "configs"
+        / "xh25-single-student-search.yaml"
+    )
+
+    assert config.model_path == "runs/train/xh25-single-student-head/weights/best.pt"
+    assert config.class_thresholds == {class_id: 0.05 for class_id in range(25)}

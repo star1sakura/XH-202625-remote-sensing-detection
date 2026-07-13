@@ -1,0 +1,37 @@
+task: detect
+taxonomy: xh25
+model_path: runs/train/xh25-single-student-head/weights/best.pt
+device: "0"
+image_size: 1024
+tile_size: 1024
+overlap: 0.2
+batch_size: 8
+merge_iou: 0.3
+edge_margin: 16
+half: true
+class_thresholds:
+  0: 0.05
+  1: 0.05
+  2: 0.05
+  3: 0.05
+  4: 0.05
+  5: 0.05
+  6: 0.05
+  7: 0.05
+  8: 0.05
+  9: 0.05
+  10: 0.05
+  11: 0.05
+  12: 0.05
+  13: 0.05
+  14: 0.05
+  15: 0.05
+  16: 0.05
+  17: 0.05
+  18: 0.05
+  19: 0.05
+  20: 0.05
+  21: 0.05
+  22: 0.05
+  23: 0.05
+  24: 0.05
