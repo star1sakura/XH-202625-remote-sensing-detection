@@ -1,6 +1,6 @@
 task: detect
 taxonomy: vehicle1
-model_path: runs/train/vehicle-expert-sph-p2/weights/best.pt
+model_path: runs/train/vehicle-expert-sph-p2-head/weights/best.pt
 device: "0"
 image_size: 1024
 tile_size: 512
@@ -10,4 +10,4 @@ merge_iou: 0.3
 edge_margin: 16
 half: true
 class_thresholds:
-  0: 0.25
+  0: 0.05
