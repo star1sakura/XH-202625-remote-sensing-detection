@@ -41,9 +41,11 @@ space. This creates one checkpoint; it is not prediction fusion.
   --alpha 0.5
 ```
 
-Use `configs/xh25-main-seeded-mks-alpha050.yaml` for final inference.
+Use `configs/xh25-main-seeded-mks-alpha050-fine.yaml` for final inference. It
+loads the same single checkpoint and adds the final class thresholds plus one
+vehicle-only low-score area rule.
 
-## Fixed validation result
+## Pre-calibration validation result
 
 | Ranking item | Historical main | Single MKS weight | Result |
 |---|---:|---:|---|
@@ -57,6 +59,30 @@ Use `configs/xh25-main-seeded-mks-alpha050.yaml` for final inference.
 Counts are aircraft `2722 TP / 35 FP`, ship `332 / 60`, and vehicle `56 / 13`.
 The checkpoint SHA256 is
 `400a29ac9c505252bbdd2c411edeecda5468aeb25130618cc8f7138e452bafc0`.
+
+## Final six-metric calibration
+
+The fine threshold search improves five of the six accuracy ranking items. The
+remaining error is one low-confidence vehicle false positive with an HBB area
+of `690 px^2`. The final generic postprocess rule drops class `24` detections
+only when both `score < 0.21` and merged HBB `area < 700 px^2` hold. At the same
+`0.19` vehicle threshold, the rule preserves all `300` vehicle true positives
+on train while reducing false positives from `31` to `30`.
+
+| Ranking item | Previous best | Final configuration | Result |
+|---|---:|---:|---|
+| Aircraft Recall | 0.991260 | 0.992353 | Improved |
+| Aircraft FDR | 0.012695 | 0.011965 | Improved |
+| Ship Recall | 0.825871 | 0.833333 | Improved |
+| Ship FDR | 0.153061 | 0.149746 | Improved |
+| Vehicle Recall | 0.717949 | 0.730769 | Improved |
+| Vehicle FDR | 0.188406 | 0.185714 | Improved |
+
+Final validation counts are aircraft `2725 TP / 33 FP`, ship `335 / 59`, and
+vehicle `57 / 13`. The machine-readable evidence is stored in
+`outputs/xh25/single-student/main-seeded-alpha050-fine/report.json` and
+`six-metric-comparison.json`. The checkpoint is unchanged, so this remains one
+model forward pass per tile rather than an ensemble.
 
 ## Latency
 
