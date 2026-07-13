@@ -24,7 +24,7 @@ class RankingEnsemblePolicy:
     aircraft_threshold: float = 0.25
     ship_threshold: float = 0.31
     vehicle_primary_threshold: float = 0.25
-    vehicle_supplement_threshold: float = 0.64
+    vehicle_supplement_threshold: float = 0.74
     vehicle_duplicate_iou: float = 0.30
 
     def __post_init__(self) -> None:

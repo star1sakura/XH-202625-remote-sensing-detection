@@ -98,7 +98,7 @@ def test_seven_metric_comparison_requires_six_strict_improvements() -> None:
         by_coarse_class={
             "aircraft": Metrics(2721, 39, 25),
             "ship": Metrics(336, 60, 66),
-            "vehicle": Metrics(59, 15, 19),
+            "vehicle": Metrics(58, 12, 20),
         },
         by_fine_class={},
         by_image={},

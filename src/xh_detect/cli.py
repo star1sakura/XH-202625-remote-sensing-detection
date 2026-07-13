@@ -788,7 +788,7 @@ def fuse_ranking_ensemble_command(
     aircraft_threshold: Annotated[float, typer.Option()] = 0.25,
     ship_threshold: Annotated[float, typer.Option()] = 0.31,
     vehicle_primary_threshold: Annotated[float, typer.Option()] = 0.25,
-    vehicle_supplement_threshold: Annotated[float, typer.Option()] = 0.64,
+    vehicle_supplement_threshold: Annotated[float, typer.Option()] = 0.74,
     vehicle_duplicate_iou: Annotated[float, typer.Option()] = 0.30,
 ) -> None:
     image_map = _load_image_id_map(image_map_json)

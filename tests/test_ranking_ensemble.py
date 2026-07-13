@@ -43,7 +43,7 @@ def test_vehicle_supplement_adds_new_proposal_and_rejects_duplicates() -> None:
     primary = [Detection("1", 24, 0.80, _box(0, 0, 10, 10))]
     supplement = [
         Detection("1", 24, 0.90, _box(1, 0, 11, 10)),
-        Detection("1", 24, 0.70, _box(30, 0, 40, 10)),
+        Detection("1", 24, 0.80, _box(30, 0, 40, 10)),
         Detection("1", 24, 0.63, _box(50, 0, 60, 10)),
     ]
 
@@ -57,7 +57,7 @@ def test_vehicle_supplement_adds_new_proposal_and_rejects_duplicates() -> None:
 
     assert [(item.score, item.polygon) for item in result] == [
         (0.80, _box(0, 0, 10, 10)),
-        (0.70, _box(30, 0, 40, 10)),
+        (0.80, _box(30, 0, 40, 10)),
     ]
 
 
