@@ -5,7 +5,7 @@ from types import MappingProxyType
 
 import yaml
 
-from xh_detect.postprocess import SuppressionRule
+from xh_detect.postprocess import LowScoreAreaRule, SuppressionRule
 from xh_detect.taxonomy import get_taxonomy
 
 
@@ -28,10 +28,12 @@ class PipelineConfig:
     half: bool = True
     class_thresholds: Mapping[int, float] = field(default_factory=_default_class_thresholds)
     class_suppression: Mapping[int, SuppressionRule] = field(default_factory=dict)
+    class_low_score_area_filters: Mapping[int, LowScoreAreaRule] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         class_thresholds = dict(self.class_thresholds)
         class_suppression = dict(self.class_suppression)
+        class_low_score_area_filters = dict(self.class_low_score_area_filters)
         taxonomy = get_taxonomy(self.taxonomy)
 
         if self.task not in {"detect", "obb"}:
@@ -62,8 +64,24 @@ class PipelineConfig:
                 raise ValueError("class_suppression IDs must belong to the taxonomy")
             if not isinstance(rule, SuppressionRule):
                 raise TypeError("class_suppression values must be SuppressionRule instances")
+        for class_id, rule in class_low_score_area_filters.items():
+            if (
+                isinstance(class_id, bool)
+                or not isinstance(class_id, int)
+                or class_id not in taxonomy.valid_ids
+            ):
+                raise ValueError("class_low_score_area_filters IDs must belong to the taxonomy")
+            if not isinstance(rule, LowScoreAreaRule):
+                raise TypeError(
+                    "class_low_score_area_filters values must be LowScoreAreaRule instances"
+                )
         object.__setattr__(self, "class_thresholds", MappingProxyType(class_thresholds))
         object.__setattr__(self, "class_suppression", MappingProxyType(class_suppression))
+        object.__setattr__(
+            self,
+            "class_low_score_area_filters",
+            MappingProxyType(class_low_score_area_filters),
+        )
 
     @property
     def valid_class_ids(self) -> frozenset[int]:
@@ -87,6 +105,13 @@ class PipelineConfig:
                 class_id: {"method": rule.method, "threshold": rule.threshold}
                 for class_id, rule in self.class_suppression.items()
             },
+            "class_low_score_area_filters": {
+                class_id: {
+                    "score_ceiling": rule.score_ceiling,
+                    "min_area": rule.min_area,
+                }
+                for class_id, rule in self.class_low_score_area_filters.items()
+            },
         }
 
     @classmethod
@@ -103,6 +128,9 @@ class PipelineConfig:
         class_suppression = raw_mapping.pop("class_suppression", {})
         if not isinstance(class_suppression, Mapping):
             raise ValueError("class_suppression must be a mapping")
+        class_low_score_area_filters = raw_mapping.pop("class_low_score_area_filters", {})
+        if not isinstance(class_low_score_area_filters, Mapping):
+            raise ValueError("class_low_score_area_filters must be a mapping")
 
         valid_keys = {
             "task",
@@ -118,6 +146,7 @@ class PipelineConfig:
             "half",
             "class_thresholds",
             "class_suppression",
+            "class_low_score_area_filters",
         }
         unknown_keys = sorted(key for key in raw_mapping if key not in valid_keys)
         if unknown_keys:
@@ -139,4 +168,18 @@ class PipelineConfig:
                 threshold=float(rule_fields["threshold"]),
             )
         raw_mapping["class_suppression"] = parsed_suppression
+        parsed_area_filters: dict[int, LowScoreAreaRule] = {}
+        for class_id, payload in class_low_score_area_filters.items():
+            if not isinstance(payload, Mapping):
+                raise ValueError("class_low_score_area_filters rules must be mappings")
+            rule_fields = dict(payload)
+            if set(rule_fields) != {"score_ceiling", "min_area"}:
+                raise ValueError(
+                    "class_low_score_area_filters rules require score_ceiling and min_area"
+                )
+            parsed_area_filters[int(class_id)] = LowScoreAreaRule(
+                score_ceiling=float(rule_fields["score_ceiling"]),
+                min_area=float(rule_fields["min_area"]),
+            )
+        raw_mapping["class_low_score_area_filters"] = parsed_area_filters
         return cls(**raw_mapping)

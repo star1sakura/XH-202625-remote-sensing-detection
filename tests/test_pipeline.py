@@ -9,6 +9,20 @@ from xh_detect.config import PipelineConfig
 from xh_detect.types import BoxPrediction, InferenceResult
 
 
+def _box(
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+) -> tuple[
+    tuple[float, float],
+    tuple[float, float],
+    tuple[float, float],
+    tuple[float, float],
+]:
+    return ((x1, y1), (x2, y1), (x2, y2), (x1, y2))
+
+
 def _prediction(
     class_id: int = 0,
     score: float = 0.9,
@@ -191,6 +205,44 @@ def test_pipeline_applies_secondary_suppression_only_to_configured_ship() -> Non
         (3, 0.95),
         (24, 0.85),
         (24, 0.80),
+    ]
+
+
+def test_pipeline_applies_low_score_area_filter_after_merge() -> None:
+    from xh_detect.pipeline import InferencePipeline
+    from xh_detect.postprocess import LowScoreAreaRule
+
+    config = PipelineConfig(
+        task="detect",
+        taxonomy="xh25",
+        tile_size=40,
+        overlap=0.0,
+        batch_size=4,
+        edge_margin=0,
+        merge_iou=1.0,
+        class_thresholds={class_id: 0.19 for class_id in range(25)},
+        class_low_score_area_filters={24: LowScoreAreaRule(0.21, 700)},
+    )
+    detector = RecordingDetector(
+        [
+            [
+                _prediction(class_id=24, score=0.20, polygon=_box(0, 0, 20, 20)),
+                _prediction(class_id=24, score=0.20, polygon=_box(0, 0, 35, 20)),
+                _prediction(class_id=24, score=0.22, polygon=_box(20, 0, 30, 10)),
+                _prediction(class_id=3, score=0.20, polygon=_box(20, 20, 30, 30)),
+            ]
+        ]
+    )
+
+    result = InferencePipeline(detector, config).run(
+        np.zeros((40, 40, 3), dtype=np.uint8),
+        "area-filter",
+    )
+
+    assert [(item.class_id, item.score, item.polygon) for item in result.detections] == [
+        (24, 0.22, _box(20, 0, 30, 10)),
+        (24, 0.20, _box(0, 0, 35, 20)),
+        (3, 0.20, _box(20, 20, 30, 30)),
     ]
 
 

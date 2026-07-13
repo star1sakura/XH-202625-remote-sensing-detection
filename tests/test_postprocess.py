@@ -65,3 +65,58 @@ def test_suppression_rule_rejects_invalid_values(method: str, threshold: float) 
 
     with pytest.raises(ValueError):
         SuppressionRule(method=method, threshold=threshold)
+
+
+def test_low_score_area_filter_requires_both_conditions_and_matching_class() -> None:
+    from xh_detect.postprocess import (
+        LowScoreAreaRule,
+        filter_low_score_area_detections,
+    )
+
+    detections = [
+        Detection("img", 24, 0.20, _box(0, 0, 40, 20)),
+        Detection("img", 24, 0.22, _box(0, 0, 10, 10)),
+        Detection("img", 24, 0.20, _box(0, 0, 10, 10)),
+        Detection("img", 3, 0.20, _box(0, 0, 10, 10)),
+    ]
+
+    kept = filter_low_score_area_detections(
+        detections,
+        {24: LowScoreAreaRule(score_ceiling=0.21, min_area=700)},
+    )
+
+    assert kept == [detections[0], detections[1], detections[3]]
+
+
+def test_low_score_area_filter_keeps_boundary_values() -> None:
+    from xh_detect.postprocess import (
+        LowScoreAreaRule,
+        filter_low_score_area_detections,
+    )
+
+    detections = [
+        Detection("img", 24, 0.21, _box(0, 0, 10, 10)),
+        Detection("img", 24, 0.20, _box(0, 0, 35, 20)),
+    ]
+
+    assert (
+        filter_low_score_area_detections(
+            detections,
+            {24: LowScoreAreaRule(score_ceiling=0.21, min_area=700)},
+        )
+        == detections
+    )
+
+
+@pytest.mark.parametrize(
+    ("score_ceiling", "min_area"),
+    [(-0.1, 700), (1.1, 700), (float("nan"), 700), (0.21, -1), (0.21, float("inf"))],
+)
+def test_low_score_area_rule_rejects_invalid_values(
+    score_ceiling: float,
+    min_area: float,
+) -> None:
+    from xh_detect.postprocess import LowScoreAreaRule
+
+    with pytest.raises(ValueError):
+        LowScoreAreaRule(score_ceiling=score_ceiling, min_area=min_area)

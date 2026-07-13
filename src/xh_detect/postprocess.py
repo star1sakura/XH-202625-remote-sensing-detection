@@ -31,6 +31,26 @@ class SuppressionRule:
         object.__setattr__(self, "threshold", threshold)
 
 
+@dataclass(frozen=True)
+class LowScoreAreaRule:
+    score_ceiling: float
+    min_area: float
+
+    def __post_init__(self) -> None:
+        if isinstance(self.score_ceiling, bool) or not isinstance(self.score_ceiling, Real):
+            raise TypeError("score ceiling must be a finite real number")
+        score_ceiling = float(self.score_ceiling)
+        if not math.isfinite(score_ceiling) or not 0.0 <= score_ceiling <= 1.0:
+            raise ValueError("score ceiling must be finite and in [0, 1]")
+        if isinstance(self.min_area, bool) or not isinstance(self.min_area, Real):
+            raise TypeError("minimum area must be a finite real number")
+        min_area = float(self.min_area)
+        if not math.isfinite(min_area) or min_area < 0.0:
+            raise ValueError("minimum area must be finite and non-negative")
+        object.__setattr__(self, "score_ceiling", score_ceiling)
+        object.__setattr__(self, "min_area", min_area)
+
+
 def diou(box_a: HBB, box_b: HBB) -> float:
     overlap = hbb_iou(box_a, box_b)
     ax1, ay1, ax2, ay2 = box_a
@@ -89,3 +109,26 @@ def suppress_class_detections(
 
     kept.sort(key=lambda item: (-item[1].score, item[0]))
     return [detection for _, detection in kept]
+
+
+def filter_low_score_area_detections(
+    detections: Iterable[Detection],
+    rules: Mapping[int, LowScoreAreaRule],
+) -> list[Detection]:
+    validated_rules: dict[int, LowScoreAreaRule] = {}
+    for class_id, rule in rules.items():
+        if isinstance(class_id, bool) or not isinstance(class_id, Integral):
+            raise TypeError("low-score area rule class IDs must be integers")
+        if not isinstance(rule, LowScoreAreaRule):
+            raise TypeError("low-score area rule values must be LowScoreAreaRule instances")
+        validated_rules[int(class_id)] = rule
+
+    kept: list[Detection] = []
+    for detection in detections:
+        rule = validated_rules.get(detection.class_id)
+        if rule is not None and detection.score < rule.score_ceiling:
+            x1, y1, x2, y2 = obb_to_hbb(detection.polygon)
+            if (x2 - x1) * (y2 - y1) < rule.min_area:
+                continue
+        kept.append(detection)
+    return kept
