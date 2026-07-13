@@ -21,6 +21,7 @@ MAIN_TO_MKS_LAYER_MAP = {
     25: 23,
 }
 MKS_IDENTITY_LAYER_INDICES = (17, 21)
+LayerContainer = torch.nn.ModuleList | torch.nn.Sequential
 
 
 @dataclass(frozen=True)
@@ -46,9 +47,15 @@ def _sha256(path: Path) -> str:
 
 
 def _validate_architectures(source_layers: object, target_layers: object) -> None:
-    if not isinstance(source_layers, torch.nn.ModuleList) or len(source_layers) != 24:
+    if (
+        not isinstance(source_layers, (torch.nn.ModuleList, torch.nn.Sequential))
+        or len(source_layers) != 24
+    ):
         raise ValueError("main checkpoint must contain the expected 24-layer YOLO26s model")
-    if not isinstance(target_layers, torch.nn.ModuleList) or len(target_layers) != 26:
+    if (
+        not isinstance(target_layers, (torch.nn.ModuleList, torch.nn.Sequential))
+        or len(target_layers) != 26
+    ):
         raise ValueError("target YAML must contain the expected 26-layer MKSNet-Lite model")
     for index in MKS_IDENTITY_LAYER_INDICES:
         if not isinstance(target_layers[index], MKSNetLiteBlock):
@@ -56,8 +63,8 @@ def _validate_architectures(source_layers: object, target_layers: object) -> Non
 
 
 def _copy_mapped_layers(
-    source_layers: torch.nn.ModuleList,
-    target_layers: torch.nn.ModuleList,
+    source_layers: LayerContainer,
+    target_layers: LayerContainer,
 ) -> int:
     transferred_values = 0
     for target_index, source_index in MAIN_TO_MKS_LAYER_MAP.items():
@@ -74,7 +81,7 @@ def _copy_mapped_layers(
     return transferred_values
 
 
-def _initialize_identity_blocks(target_layers: torch.nn.ModuleList) -> None:
+def _initialize_identity_blocks(target_layers: LayerContainer) -> None:
     with torch.no_grad():
         for index in MKS_IDENTITY_LAYER_INDICES:
             block = target_layers[index]
