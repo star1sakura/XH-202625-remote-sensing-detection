@@ -8,7 +8,7 @@ from pathlib import Path
 
 import yaml
 
-from xh_detect.evaluator import EvaluationReport, Metrics, evaluate, report_to_dict
+from xh_detect.evaluator import EvaluationReport, Metrics, _match, evaluate, report_to_dict
 from xh_detect.taxonomy import Taxonomy
 from xh_detect.thresholds import filter_predictions_by_class_threshold, parse_threshold_grid
 from xh_detect.types import Detection, ObjectAnnotation
@@ -56,6 +56,28 @@ def _evaluate_map(
     )
 
 
+def _evaluate_group(
+    predictions: Sequence[Detection],
+    truth: Sequence[ObjectAnnotation],
+    thresholds: Mapping[int, float],
+    taxonomy: Taxonomy,
+    group: str,
+) -> Metrics:
+    group_predictions = [
+        item
+        for item in predictions
+        if taxonomy.coarse_name(item.class_id) == group and item.score >= thresholds[item.class_id]
+    ]
+    group_truth = [item for item in truth if taxonomy.coarse_name(item.class_id) == group]
+    metrics, _, _ = _match(
+        group_predictions,
+        group_truth,
+        taxonomy,
+        lambda _: "all",
+    )
+    return metrics
+
+
 def optimize_ranking_thresholds(
     predictions: Iterable[Detection],
     ground_truth: Iterable[ObjectAnnotation],
@@ -89,14 +111,15 @@ def optimize_ranking_thresholds(
             candidate_map = dict(thresholds_by_class)
             for class_id in classes_by_group[group]:
                 candidate_map[class_id] = threshold
-            report = _evaluate_map(
+            metrics = _evaluate_group(
                 prediction_items,
                 truth_items,
                 candidate_map,
                 taxonomy,
+                group,
             )
             score = _normalized_score(
-                report.by_coarse_class[group],
+                metrics,
                 baseline.by_coarse_class[group],
             )
             if best_score is None or score > best_score:
@@ -109,27 +132,29 @@ def optimize_ranking_thresholds(
         for group in groups:
             for class_id in classes_by_group[group]:
                 best_threshold = thresholds_by_class[class_id]
-                current_report = _evaluate_map(
+                current_metrics = _evaluate_group(
                     prediction_items,
                     truth_items,
                     thresholds_by_class,
                     taxonomy,
+                    group,
                 )
                 best_score = _normalized_score(
-                    current_report.by_coarse_class[group],
+                    current_metrics,
                     baseline.by_coarse_class[group],
                 )
                 for threshold in grid:
                     candidate_map = dict(thresholds_by_class)
                     candidate_map[class_id] = threshold
-                    report = _evaluate_map(
+                    metrics = _evaluate_group(
                         prediction_items,
                         truth_items,
                         candidate_map,
                         taxonomy,
+                        group,
                     )
                     score = _normalized_score(
-                        report.by_coarse_class[group],
+                        metrics,
                         baseline.by_coarse_class[group],
                     )
                     if score > best_score:
