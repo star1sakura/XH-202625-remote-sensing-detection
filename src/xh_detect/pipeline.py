@@ -13,6 +13,7 @@ from xh_detect.cache import TilePredictionCache
 from xh_detect.config import PipelineConfig
 from xh_detect.detector import Detector, predict_with_oom_backoff
 from xh_detect.merge import keep_tile_prediction, merge_detections, project_prediction
+from xh_detect.postprocess import filter_low_score_area_detections, suppress_class_detections
 from xh_detect.tiling import iter_tiles
 from xh_detect.types import (
     BoxPrediction,
@@ -210,7 +211,14 @@ class InferencePipeline:
                     )
                 )
 
-        merged = tuple(merge_detections(detections, iou_threshold=self.config.merge_iou))
+        merged = merge_detections(detections, iou_threshold=self.config.merge_iou)
+        suppressed = suppress_class_detections(merged, self.config.class_suppression)
+        final_detections = tuple(
+            filter_low_score_area_detections(
+                suppressed,
+                self.config.class_low_score_area_filters,
+            )
+        )
         postprocess_s = time.perf_counter() - postprocess_start
 
         total_elapsed = time.perf_counter() - total_start
@@ -221,4 +229,4 @@ class InferencePipeline:
             postprocess_s=postprocess_s,
             total_s=max(total_elapsed, measured_sum),
         )
-        return InferenceResult(detections=merged, timings=timings)
+        return InferenceResult(detections=final_detections, timings=timings)

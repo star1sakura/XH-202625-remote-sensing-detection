@@ -1,0 +1,38 @@
+# XH25 HBB detector with a MKSNet-style full backbone and YOLO detection head.
+nc: 25
+end2end: true
+reg_max: 1
+scale: s
+depth_multiple: 0.50
+width_multiple: 0.50
+
+backbone:
+  - [-1, 1, Conv, [128, 3, 2]]
+  - [-1, 1, Conv, [256, 3, 2]]
+  - [-1, 1, MKSStage, [128, 1, [3, 5, 7, 9], [1, 1, 2, 2], 16, ca_sa]]
+  - [-1, 1, Conv, [512, 3, 2]]
+  - [-1, 1, MKSStage, [256, 2, [3, 5, 7, 9], [1, 1, 2, 2], 16, ca_sa]]
+  - [-1, 1, Conv, [1024, 3, 2]]
+  - [-1, 1, MKSStage, [512, 2, [3, 5, 7, 9], [1, 1, 2, 2], 16, ca_sa]]
+  - [-1, 1, Conv, [1536, 3, 2]]
+  - [-1, 1, MKSStage, [768, 2, [3, 5, 7, 9], [1, 1, 2, 2], 16, ca_sa]]
+  - [-1, 1, SPPF, [1536, 5, 3, true]]
+
+head:
+  - [-1, 1, nn.Upsample, [null, 2, nearest]]
+  - [[-1, 6], 1, Concat, [1]]
+  - [-1, 2, C3k2, [1024, true]]
+
+  - [-1, 1, nn.Upsample, [null, 2, nearest]]
+  - [[-1, 4], 1, Concat, [1]]
+  - [-1, 2, C3k2, [512, true]]
+
+  - [-1, 1, Conv, [512, 3, 2]]
+  - [[-1, 12], 1, Concat, [1]]
+  - [-1, 2, C3k2, [1024, true]]
+
+  - [-1, 1, Conv, [1024, 3, 2]]
+  - [[-1, 9], 1, Concat, [1]]
+  - [-1, 1, C3k2, [1536, true, 0.5, true]]
+
+  - [[15, 18, 21], 1, Detect, [nc]]

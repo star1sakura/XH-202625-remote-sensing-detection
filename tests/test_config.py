@@ -20,6 +20,8 @@ def test_pipeline_config_defaults_match_expected_values() -> None:
     assert config.edge_margin == 16
     assert config.half is True
     assert config.class_thresholds == {0: 0.25, 1: 0.25, 2: 0.25}
+    assert config.class_suppression == {}
+    assert config.class_low_score_area_filters == {}
     assert config.valid_class_ids == frozenset({0, 1, 2})
 
 
@@ -52,6 +54,8 @@ def test_pipeline_config_to_dict_returns_serializable_primitives() -> None:
         "edge_margin": 16,
         "half": True,
         "class_thresholds": {0: 0.25, 1: 0.25, 2: 0.25},
+        "class_suppression": {},
+        "class_low_score_area_filters": {},
     }
 
 
@@ -108,6 +112,23 @@ def test_xh25_hbb_yaml_loads_detect_task_and_taxonomy() -> None:
     assert config.taxonomy == "xh25"
     assert config.valid_class_ids == frozenset(range(25))
     assert config.class_thresholds == {class_id: 0.25 for class_id in range(25)}
+
+
+def test_xh25_mksnet_lite_thresholded_yaml_uses_optimized_thresholds() -> None:
+    config_path = (
+        Path(__file__).resolve().parents[1] / "configs" / "xh25-mksnet-lite-thresholded.yaml"
+    )
+
+    config = PipelineConfig.from_yaml(config_path)
+
+    assert config.task == "detect"
+    assert config.taxonomy == "xh25"
+    assert config.model_path == "runs/train/xh25-mksnet-lite/weights/best.pt"
+    assert config.class_thresholds[2] == 0.40
+    assert config.class_thresholds[4] == 0.55
+    assert config.class_thresholds[5] == 0.50
+    for class_id in set(range(25)) - {2, 4, 5}:
+        assert config.class_thresholds[class_id] == 0.30
 
 
 def test_overlap_one_raises_value_error() -> None:
@@ -200,3 +221,134 @@ def test_from_yaml_converts_threshold_keys_and_values(tmp_path: Path) -> None:
     assert config.class_thresholds == {0: 1.0, 1: 0.5, 2: 0.25}
     assert all(isinstance(class_id, int) for class_id in config.class_thresholds)
     assert all(isinstance(threshold, float) for threshold in config.class_thresholds.values())
+
+
+def test_pipeline_config_loads_ship_only_suppression(tmp_path: Path) -> None:
+    path = tmp_path / "ship.yaml"
+    path.write_text(
+        "task: detect\n"
+        "taxonomy: xh25\n"
+        "model_path: model.pt\n"
+        "class_suppression:\n"
+        "  3: {method: diou, threshold: 0.15}\n"
+        "class_thresholds:\n" + "".join(f"  {class_id}: 0.25\n" for class_id in range(25)),
+        encoding="utf-8",
+    )
+
+    config = PipelineConfig.from_yaml(path)
+
+    assert config.class_suppression[3].method == "diou"
+    assert config.class_suppression[3].threshold == 0.15
+
+
+def test_pipeline_config_loads_low_score_area_filter(tmp_path: Path) -> None:
+    path = tmp_path / "vehicle-area.yaml"
+    path.write_text(
+        "task: detect\n"
+        "taxonomy: xh25\n"
+        "model_path: model.pt\n"
+        "class_low_score_area_filters:\n"
+        "  24: {score_ceiling: 0.21, min_area: 700}\n"
+        "class_thresholds:\n" + "".join(f"  {class_id}: 0.25\n" for class_id in range(25)),
+        encoding="utf-8",
+    )
+
+    config = PipelineConfig.from_yaml(path)
+
+    assert set(config.class_low_score_area_filters) == {24}
+    assert config.class_low_score_area_filters[24].score_ceiling == 0.21
+    assert config.class_low_score_area_filters[24].min_area == 700.0
+    with pytest.raises(TypeError):
+        config.class_low_score_area_filters[24] = config.class_low_score_area_filters[24]
+
+
+def test_pipeline_config_rejects_suppression_class_outside_taxonomy() -> None:
+    from xh_detect.postprocess import SuppressionRule
+
+    with pytest.raises(ValueError, match="class_suppression"):
+        PipelineConfig(class_suppression={24: SuppressionRule("iou", 0.3)})
+
+
+@pytest.mark.parametrize(
+    ("name", "method", "threshold"),
+    [
+        ("xh25-main-ship-iou.yaml", "iou", 0.30),
+        ("xh25-main-ship-diou.yaml", "diou", 0.15),
+    ],
+)
+def test_main_ship_postprocess_configs_are_ship_only(
+    name: str,
+    method: str,
+    threshold: float,
+) -> None:
+    config = PipelineConfig.from_yaml(Path(__file__).resolve().parents[1] / "configs" / name)
+
+    assert config.model_path == "runs/train/xh25-yolo26s-e80/weights/best.pt"
+    assert set(config.class_suppression) == {0, 1, 2, 3}
+    assert {rule.method for rule in config.class_suppression.values()} == {method}
+    assert {rule.threshold for rule in config.class_suppression.values()} == {threshold}
+
+
+@pytest.mark.parametrize(
+    ("name", "run_name"),
+    [
+        ("xh25-main-hn.yaml", "xh25-main-hn"),
+        ("xh25-main-hn-density.yaml", "xh25-main-hn-density"),
+    ],
+)
+def test_main_hn_configs_only_change_candidate_weight_path(
+    name: str,
+    run_name: str,
+) -> None:
+    config = PipelineConfig.from_yaml(Path(__file__).resolve().parents[1] / "configs" / name)
+
+    assert config.model_path == f"runs/train/{run_name}/weights/best.pt"
+    assert config.taxonomy == "xh25"
+    assert config.image_size == 1024
+    assert config.class_suppression == {}
+    assert set(config.class_thresholds) == set(range(25))
+
+
+def test_historical_main_config_uses_supplied_checkpoint() -> None:
+    config = PipelineConfig.from_yaml(
+        Path(__file__).resolve().parents[1] / "configs" / "xh25-historical-main.yaml"
+    )
+
+    assert config.model_path == "outputs/xh25/historical-main/best.pt"
+    assert config.taxonomy == "xh25"
+    assert config.image_size == 1024
+    assert config.tile_size == 1024
+    assert config.merge_iou == 0.3
+    assert config.class_thresholds == {class_id: 0.25 for class_id in range(25)}
+
+
+def test_single_student_config_uses_one_checkpoint() -> None:
+    config = PipelineConfig.from_yaml(
+        Path(__file__).resolve().parents[1] / "configs" / "xh25-single-student.yaml"
+    )
+
+    assert config.model_path == "runs/train/xh25-single-student-head/weights/best.pt"
+    assert config.taxonomy == "xh25"
+    assert config.image_size == 1024
+    assert config.class_thresholds == {class_id: 0.25 for class_id in range(25)}
+
+
+def test_single_student_search_config_keeps_low_score_predictions() -> None:
+    config = PipelineConfig.from_yaml(
+        Path(__file__).resolve().parents[1] / "configs" / "xh25-single-student-search.yaml"
+    )
+
+    assert config.model_path == "runs/train/xh25-single-student-head/weights/best.pt"
+    assert config.class_thresholds == {class_id: 0.05 for class_id in range(25)}
+
+
+def test_alpha050_fine_config_uses_vehicle_area_filter() -> None:
+    config = PipelineConfig.from_yaml(
+        Path(__file__).resolve().parents[1] / "configs" / "xh25-main-seeded-mks-alpha050-fine.yaml"
+    )
+
+    assert config.model_path == "outputs/xh25/single-student/main-seeded-alpha050.pt"
+    assert config.class_thresholds[24] == 0.19
+    assert set(config.class_low_score_area_filters) == {24}
+    assert config.class_low_score_area_filters[24].score_ceiling == 0.21
+    assert config.class_low_score_area_filters[24].min_area == 700.0

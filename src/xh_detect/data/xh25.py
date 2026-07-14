@@ -867,19 +867,20 @@ def _demo_samples(val_records: tuple[ImageRecord, ...]) -> dict[str, str]:
 
 
 def _coco_ground_truth(
-    val_records: tuple[ImageRecord, ...],
+    records: tuple[ImageRecord, ...],
     image_map: Mapping[str, int],
+    split: str,
 ) -> dict[str, object]:
     taxonomy = get_taxonomy("xh25")
     images: list[dict[str, object]] = []
     annotations: list[dict[str, object]] = []
     annotation_id = 1
-    for record in sorted(val_records, key=lambda item: item.stem):
+    for record in sorted(records, key=lambda item: item.stem):
         image_id = image_map[record.stem]
         images.append(
             {
                 "id": image_id,
-                "file_name": _relative_image_path("val", record.stem),
+                "file_name": _relative_image_path(split, record.stem),
                 "width": record.width,
                 "height": record.height,
             }
@@ -1020,11 +1021,13 @@ def _metadata_paths(output_root: Path) -> tuple[Path, ...]:
         manifests_dir / "train.txt",
         manifests_dir / "val.txt",
         manifests_dir / "source-groups.json",
+        manifests_dir / "train-image-map.json",
         manifests_dir / "val-image-map.json",
         manifests_dir / "demo-samples.json",
         output_root / "dataset.yaml",
         reports_dir / "dataset-analysis.json",
         reports_dir / "dataset-analysis.md",
+        reports_dir / "train-ground-truth.json",
         reports_dir / "val-ground-truth.json",
     )
 
@@ -1109,25 +1112,34 @@ def _validate_materialized_dataset(
         if split not in expected or stem not in expected[split]:
             raise ValueError("materialized source-group split is inconsistent")
 
-    val_image_map = json.loads(
-        (root / "manifests" / "val-image-map.json").read_text(encoding="utf-8")
-    )
-    sorted_val = sorted(expected["val"])
-    expected_map = {stem: image_id for image_id, stem in enumerate(sorted_val, start=1)}
-    if val_image_map != expected_map:
-        raise ValueError("materialized validation image map is inconsistent")
+    for split in ("train", "val"):
+        image_map = json.loads(
+            (root / "manifests" / f"{split}-image-map.json").read_text(encoding="utf-8")
+        )
+        sorted_stems = sorted(expected[split])
+        expected_map = {stem: image_id for image_id, stem in enumerate(sorted_stems, start=1)}
+        if image_map != expected_map:
+            raise ValueError(f"materialized {split} image map is inconsistent")
 
-    coco = json.loads((root / "reports" / "val-ground-truth.json").read_text(encoding="utf-8"))
-    coco_images = coco.get("images")
-    if not isinstance(coco_images, list):
-        raise ValueError("materialized COCO images are invalid")
-    coco_map = {
-        Path(str(image["file_name"])).stem: image["id"]
-        for image in coco_images
-        if isinstance(image, Mapping)
-    }
-    if coco_map != expected_map:
-        raise ValueError("materialized COCO image IDs are inconsistent")
+        coco = json.loads(
+            (root / "reports" / f"{split}-ground-truth.json").read_text(encoding="utf-8")
+        )
+        coco_images = coco.get("images")
+        if not isinstance(coco_images, list):
+            raise ValueError("materialized COCO images are invalid")
+        coco_map = {
+            Path(str(image["file_name"])).stem: image["id"]
+            for image in coco_images
+            if isinstance(image, Mapping)
+        }
+        if coco_map != expected_map:
+            raise ValueError("materialized COCO image IDs are inconsistent")
+        if any(
+            Path(str(image["file_name"])).parts[:2] != ("images", split)
+            for image in coco_images
+            if isinstance(image, Mapping)
+        ):
+            raise ValueError("materialized COCO image split is inconsistent")
 
 
 def _materialize_locked_stage(
@@ -1141,6 +1153,13 @@ def _materialize_locked_stage(
     transaction_id: str,
 ) -> None:
     demo_samples = _demo_samples(val_records)
+    train_image_map = {
+        record.stem: image_id
+        for image_id, record in enumerate(
+            sorted(train_records, key=lambda item: item.stem),
+            start=1,
+        )
+    }
     val_image_map = {
         record.stem: image_id
         for image_id, record in enumerate(
@@ -1148,7 +1167,8 @@ def _materialize_locked_stage(
             start=1,
         )
     }
-    coco = _coco_ground_truth(val_records, val_image_map)
+    train_coco = _coco_ground_truth(train_records, train_image_map, "train")
+    val_coco = _coco_ground_truth(val_records, val_image_map, "val")
     link_mode_counts: Counter[str] = Counter()
     for split, records in (("train", train_records), ("val", val_records)):
         for record in records:
@@ -1194,6 +1214,7 @@ def _materialize_locked_stage(
     _atomic_write_text(manifests_dir / "train.txt", train_manifest, stage_root)
     _atomic_write_text(manifests_dir / "val.txt", val_manifest, stage_root)
     _atomic_write_json(manifests_dir / "source-groups.json", source_groups, stage_root)
+    _atomic_write_json(manifests_dir / "train-image-map.json", train_image_map, stage_root)
     _atomic_write_json(manifests_dir / "val-image-map.json", val_image_map, stage_root)
     _atomic_write_json(manifests_dir / "demo-samples.json", demo_samples, stage_root)
     _atomic_write_text(stage_root / "dataset.yaml", dataset_yaml, stage_root)
@@ -1203,7 +1224,8 @@ def _materialize_locked_stage(
         _analysis_markdown(analysis),
         stage_root,
     )
-    _atomic_write_json(reports_dir / "val-ground-truth.json", coco, stage_root)
+    _atomic_write_json(reports_dir / "train-ground-truth.json", train_coco, stage_root)
+    _atomic_write_json(reports_dir / "val-ground-truth.json", val_coco, stage_root)
     _atomic_write_text(
         stage_root / _TRANSACTION_MARKER_NAME,
         transaction_id,
@@ -1235,6 +1257,40 @@ def _materialize_into_stage(
             seed,
             transaction_id,
         )
+
+
+def publish_train_mining_artifacts(dataset_root: Path) -> tuple[Path, Path]:
+    dataset_root = Path(dataset_root)
+    _validate_output_tree_paths(dataset_root)
+    audit = audit_dataset(dataset_root)
+    records = tuple(sorted(audit.records, key=lambda item: item.stem))
+    train_stems = {record.stem for record in records}
+    manifest_path = dataset_root / "manifests" / "train.txt"
+    source_groups_path = dataset_root / "manifests" / "source-groups.json"
+    if not manifest_path.is_file() or not source_groups_path.is_file():
+        raise ValueError("prepared dataset is missing train manifest or source groups")
+    manifest_stems = {
+        Path(line).stem
+        for line in manifest_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    }
+    if manifest_stems != train_stems:
+        raise ValueError("prepared train manifest is inconsistent with train images")
+    source_groups = json.loads(source_groups_path.read_text(encoding="utf-8"))
+    if not isinstance(source_groups, Mapping) or any(
+        not isinstance(source_groups.get(stem), Mapping)
+        or source_groups[stem].get("split") != "train"
+        for stem in train_stems
+    ):
+        raise ValueError("prepared source groups are inconsistent with train images")
+
+    image_map = {record.stem: image_id for image_id, record in enumerate(records, start=1)}
+    truth = _coco_ground_truth(records, image_map, "train")
+    image_map_path = dataset_root / "manifests" / "train-image-map.json"
+    truth_path = dataset_root / "reports" / "train-ground-truth.json"
+    _atomic_write_json(image_map_path, image_map, dataset_root)
+    _atomic_write_json(truth_path, truth, dataset_root)
+    return image_map_path, truth_path
 
 
 def _reserve_sibling_path(output_root: Path, kind: str) -> Path:

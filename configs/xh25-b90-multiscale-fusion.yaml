@@ -1,0 +1,32 @@
+aircraft_supplement_threshold: 0.75
+aircraft_duplicate_iou: 0.30
+ship_supplement_threshold: 0.56
+ship_duplicate_iou: 0.70
+vehicle_score_ceiling: 0.21
+vehicle_min_area: 700.0
+class_thresholds:
+  0: 0.02
+  1: 0.32
+  2: 0.09
+  3: 0.44
+  4: 0.40
+  5: 0.10
+  6: 0.40
+  7: 0.06
+  8: 0.03
+  9: 0.04
+  10: 0.40
+  11: 0.40
+  12: 0.58
+  13: 0.23
+  14: 0.40
+  15: 0.32
+  16: 0.40
+  17: 0.25
+  18: 0.40
+  19: 0.43
+  20: 0.18
+  21: 0.52
+  22: 0.40
+  23: 0.04
+  24: 0.03

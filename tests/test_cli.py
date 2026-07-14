@@ -128,6 +128,480 @@ def test_prepare_xh25_command_reports_output(
     prepare_dataset_mock.assert_called_once_with(source, output, val_ratio=0.15, seed=42)
 
 
+@patch("xh_detect.cli.publish_train_mining_artifacts")
+def test_publish_xh25_train_artifacts_command_reports_paths(
+    publish_train_mining_artifacts: Mock,
+    tmp_path: Path,
+) -> None:
+    dataset = tmp_path / "xh25"
+    dataset.mkdir()
+    image_map = dataset / "manifests" / "train-image-map.json"
+    truth = dataset / "reports" / "train-ground-truth.json"
+    publish_train_mining_artifacts.return_value = (image_map, truth)
+
+    result = CliRunner().invoke(
+        app,
+        ["publish-xh25-train-artifacts", "--dataset-root", str(dataset)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == {
+        "train_image_map": str(image_map),
+        "train_ground_truth": str(truth),
+    }
+    publish_train_mining_artifacts.assert_called_once_with(dataset)
+
+
+@patch("xh_detect.cli.build_ship_balanced_dataset")
+def test_build_ship_balanced_xh25_command_forwards_options(
+    build_ship_balanced_dataset: Mock,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "xh25"
+    output = tmp_path / "xh25-ship-balanced"
+    source.mkdir()
+    build_ship_balanced_dataset.return_value = SimpleNamespace(
+        output_root=output,
+        original_train_images=4,
+        balanced_train_images=7,
+        duplicated_train_images=3,
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "build-ship-balanced-xh25",
+            "--source-root",
+            str(source),
+            "--output-root",
+            str(output),
+            "--qhs-factor",
+            "3",
+            "--ms-factor",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["output_root"] == str(output)
+    assert payload["balanced_train_images"] == 7
+    build_ship_balanced_dataset.assert_called_once_with(
+        source,
+        output,
+        qhs_factor=3,
+        ms_factor=2,
+    )
+
+
+@patch("xh_detect.cli.build_main_hn_dataset")
+def test_build_main_hn_xh25_command_forwards_policy(
+    build_main_hn_dataset: Mock,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "xh25"
+    source.mkdir()
+    predictions = tmp_path / "predictions.json"
+    predictions.write_text("[]", encoding="utf-8")
+    output = tmp_path / "xh25-main-hn"
+    build_main_hn_dataset.return_value = SimpleNamespace(
+        output_root=output,
+        original_train_images=100,
+        vehicle_upsampled_images=4,
+        selected_hard_negatives=3,
+        rejected_target_overlap=2,
+        selected_by_coarse_class={"ship": 1, "vehicle": 2},
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "build-main-hn-xh25",
+            "--source-root",
+            str(source),
+            "--predictions-json",
+            str(predictions),
+            "--output-root",
+            str(output),
+            "--confidence-floor",
+            "0.60",
+            "--crop-size",
+            "512",
+            "--object-margin",
+            "16",
+            "--max-crops-per-group",
+            "2",
+            "--vehicle-multiplier",
+            "2",
+            "--seed",
+            "42",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["selected_hard_negatives"] == 3
+    args = build_main_hn_dataset.call_args.args
+    assert args[:3] == (source, predictions, output)
+    assert args[3].confidence_floor == 0.60
+    assert args[3].crop_size == 512
+    assert args[3].object_margin == 16
+    assert args[3].max_crops_per_group == 2
+    assert args[3].vehicle_multiplier == 2
+    assert args[3].seed == 42
+
+
+@patch("xh_detect.cli.build_vehicle_confirmer_dataset")
+def test_build_vehicle_confirmer_dataset_command_forwards_policy(
+    build_dataset: Mock,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "xh25"
+    source.mkdir()
+    main = tmp_path / "main.json"
+    sph = tmp_path / "sph.json"
+    main.write_text("[]", encoding="utf-8")
+    sph.write_text("[]", encoding="utf-8")
+    output = tmp_path / "vehicle-confirmer"
+    build_dataset.return_value = SimpleNamespace(
+        output_root=output,
+        train_examples=80,
+        holdout_examples=20,
+        train_positive=8,
+        train_negative=72,
+        holdout_positive=2,
+        holdout_negative=18,
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "build-vehicle-confirmer-dataset",
+            "--source-root",
+            str(source),
+            "--main-predictions-json",
+            str(main),
+            "--sph-predictions-json",
+            str(sph),
+            "--output-root",
+            str(output),
+            "--context-scale",
+            "2.5",
+            "--min-side",
+            "48",
+            "--max-side",
+            "224",
+            "--output-size",
+            "160",
+            "--holdout-ratio",
+            "0.25",
+            "--seed",
+            "7",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["holdout_positive"] == 2
+    args = build_dataset.call_args.args
+    assert args[:4] == (source, main, sph, output)
+    assert args[4].context_scale == 2.5
+    assert args[4].min_side == 48
+    assert args[4].max_side == 224
+    assert args[4].holdout_ratio == 0.25
+    assert args[4].seed == 7
+
+
+@patch("xh_detect.cli.train_vehicle_confirmer")
+def test_train_vehicle_confirmer_command_forwards_config(
+    train_confirmer: Mock,
+    tmp_path: Path,
+) -> None:
+    dataset = tmp_path / "dataset"
+    dataset.mkdir()
+    output = tmp_path / "model"
+    train_confirmer.return_value = output / "best.pt"
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "train-vehicle-confirmer",
+            "--dataset-root",
+            str(dataset),
+            "--output-dir",
+            str(output),
+            "--epochs",
+            "2",
+            "--batch-size",
+            "4",
+            "--workers",
+            "0",
+            "--seed",
+            "7",
+            "--no-pretrained",
+            "--device",
+            "cpu",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.strip() == str(output / "best.pt")
+    args = train_confirmer.call_args.args
+    assert args[0] == dataset and args[1] == output and args[3] == "cpu"
+    assert args[2].epochs == 2 and args[2].batch_size == 4
+    assert args[2].seed == 7 and not args[2].pretrained
+
+
+def test_analyze_complementarity_command_writes_pairwise_report(tmp_path: Path) -> None:
+    truth = tmp_path / "truth.json"
+    main_predictions = tmp_path / "main.json"
+    candidate_predictions = tmp_path / "candidate.json"
+    output = tmp_path / "complementarity.json"
+    truth.write_text(
+        json.dumps(
+            {
+                "annotations": [
+                    {"image_id": 1, "category_id": 24, "bbox": [0, 0, 10, 10]},
+                    {"image_id": 1, "category_id": 24, "bbox": [20, 0, 10, 10]},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    main_predictions.write_text(
+        json.dumps([{"image_id": 1, "category_id": 24, "bbox": [0, 0, 10, 10], "score": 0.9}]),
+        encoding="utf-8",
+    )
+    candidate_predictions.write_text(
+        json.dumps(
+            [
+                {"image_id": 1, "category_id": 24, "bbox": [0, 0, 10, 10], "score": 0.9},
+                {"image_id": 1, "category_id": 24, "bbox": [20, 0, 10, 10], "score": 0.8},
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "analyze-complementarity",
+            "--prediction",
+            f"main={main_predictions}",
+            "--prediction",
+            f"candidate={candidate_predictions}",
+            "--ground-truth-json",
+            str(truth),
+            "--baseline-name",
+            "main",
+            "--taxonomy",
+            "xh25",
+            "--output-path",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.strip() == str(output)
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["pairwise"]["candidate"]["vehicle"]["candidate_only_tp"] == 1
+
+
+def test_analyze_vehicle_proposals_command_writes_consensus_report(tmp_path: Path) -> None:
+    truth = tmp_path / "truth.json"
+    main_predictions = tmp_path / "main.json"
+    sph_predictions = tmp_path / "sph.json"
+    mks_predictions = tmp_path / "mks.json"
+    output = tmp_path / "vehicle-proposals.json"
+    truth.write_text(
+        json.dumps(
+            {
+                "annotations": [
+                    {"image_id": 1, "category_id": 24, "bbox": [0, 0, 10, 10]},
+                    {"image_id": 1, "category_id": 24, "bbox": [30, 0, 10, 10]},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    main_predictions.write_text(
+        json.dumps([{"image_id": 1, "category_id": 24, "bbox": [0, 0, 10, 10], "score": 0.9}]),
+        encoding="utf-8",
+    )
+    sph_predictions.write_text(
+        json.dumps(
+            [
+                {"image_id": 1, "category_id": 24, "bbox": [30, 0, 10, 10], "score": 0.8},
+                {"image_id": 1, "category_id": 24, "bbox": [60, 0, 10, 10], "score": 0.7},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    mks_predictions.write_text(
+        json.dumps([{"image_id": 1, "category_id": 24, "bbox": [30, 0, 10, 10], "score": 0.8}]),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "analyze-vehicle-proposals",
+            "--main-predictions",
+            str(main_predictions),
+            "--sph-predictions",
+            str(sph_predictions),
+            "--mks-predictions",
+            str(mks_predictions),
+            "--ground-truth-json",
+            str(truth),
+            "--output-path",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.strip() == str(output)
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["consensus"]["recoverable_tp"] == 1
+
+
+def test_analyze_vehicle_expert_command_selects_holdout_point(tmp_path: Path) -> None:
+    main = tmp_path / "main.json"
+    expert = tmp_path / "expert.json"
+    truth = tmp_path / "truth.json"
+    image_map = tmp_path / "image-map.json"
+    output = tmp_path / "report.json"
+    main.write_text(
+        json.dumps([{"image_id": 1, "category_id": 24, "bbox": [0, 0, 10, 10], "score": 0.9}]),
+        encoding="utf-8",
+    )
+    expert.write_text(
+        json.dumps(
+            [
+                {"image_id": 1, "category_id": 0, "bbox": [20, 0, 10, 10], "score": 0.8},
+                {"image_id": 1, "category_id": 0, "bbox": [40, 0, 10, 10], "score": 0.7},
+                {"image_id": 1, "category_id": 0, "bbox": [60, 0, 10, 10], "score": 0.6},
+                {"image_id": 1, "category_id": 0, "bbox": [90, 0, 10, 10], "score": 0.55},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    truth.write_text(
+        json.dumps(
+            {
+                "annotations": [
+                    {"image_id": 1, "category_id": 24, "bbox": [x, 0, 10, 10]}
+                    for x in (0, 20, 40, 60)
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    image_map.write_text(json.dumps({"img": 1}), encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "analyze-vehicle-expert",
+            "--main-predictions",
+            str(main),
+            "--expert-predictions",
+            str(expert),
+            "--ground-truth-json",
+            str(truth),
+            "--image-map-json",
+            str(image_map),
+            "--output-path",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["decision"] == "PROMOTE"
+    assert payload["selected"]["threshold"] == 0.6
+
+
+def test_apply_suppression_command_writes_filtered_predictions(tmp_path: Path) -> None:
+    predictions = tmp_path / "predictions.json"
+    image_map = tmp_path / "image-map.json"
+    config = tmp_path / "config.yaml"
+    output = tmp_path / "filtered.json"
+    predictions.write_text(
+        json.dumps(
+            [
+                {"image_id": 1, "category_id": 3, "bbox": [0, 0, 10, 10], "score": 0.9},
+                {"image_id": 1, "category_id": 3, "bbox": [6, 0, 10, 10], "score": 0.8},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    image_map.write_text(json.dumps({"image": 1}), encoding="utf-8")
+    config.write_text(
+        "task: detect\n"
+        "taxonomy: xh25\n"
+        "class_suppression:\n"
+        "  3: {method: iou, threshold: 0.20}\n"
+        "class_thresholds:\n" + "".join(f"  {class_id}: 0.25\n" for class_id in range(25)),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "apply-suppression",
+            "--predictions-json",
+            str(predictions),
+            "--image-map-json",
+            str(image_map),
+            "--config-path",
+            str(config),
+            "--output-json",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(json.loads(output.read_text(encoding="utf-8"))) == 1
+
+
+def test_audit_false_positives_command_writes_sources(tmp_path: Path) -> None:
+    predictions = tmp_path / "predictions.json"
+    truth = tmp_path / "truth.json"
+    output = tmp_path / "audit.json"
+    predictions.write_text(
+        json.dumps(
+            [
+                {"image_id": 1, "category_id": 3, "bbox": [0, 0, 10, 10], "score": 0.9},
+                {"image_id": 1, "category_id": 3, "bbox": [0, 0, 10, 10], "score": 0.8},
+                {"image_id": 1, "category_id": 3, "bbox": [30, 0, 10, 10], "score": 0.7},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    truth.write_text(
+        json.dumps({"annotations": [{"image_id": 1, "category_id": 3, "bbox": [0, 0, 10, 10]}]}),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "audit-false-positives",
+            "--predictions-json",
+            str(predictions),
+            "--ground-truth-json",
+            str(truth),
+            "--taxonomy",
+            "xh25",
+            "--output-path",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    ship = json.loads(output.read_text(encoding="utf-8"))["by_coarse_class"]["ship"]
+    assert ship == {"overlap": 1, "background": 1, "total": 2}
+
+
 @patch("xh_detect.cli.train_model")
 def test_train_command_calls_wrapper(train_model: Mock, tmp_path: Path) -> None:
     dataset = tmp_path / "dataset.yaml"
@@ -151,6 +625,7 @@ def test_train_command_calls_wrapper(train_model: Mock, tmp_path: Path) -> None:
         project="runs/train",
         name="xh25-baseline",
         resume=False,
+        pretrained=None,
     )
 
 
@@ -202,6 +677,122 @@ def test_train_command_forwards_reproducible_options(
         project="runs/obb",
         name="legacy-obb",
         resume=True,
+        pretrained=None,
+    )
+
+
+@patch("xh_detect.cli.train_model")
+def test_train_command_forwards_pretrained_option(
+    train_model: Mock,
+    tmp_path: Path,
+) -> None:
+    dataset = tmp_path / "dataset.yaml"
+    dataset.write_text("names: {}", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "train",
+            "--dataset-yaml",
+            str(dataset),
+            "--model",
+            "configs/models/xh25-mksnet-lite.yaml",
+            "--pretrained",
+            "yolo26s.pt",
+            "--epochs",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    train_model.assert_called_once_with(
+        str(dataset),
+        "configs/models/xh25-mksnet-lite.yaml",
+        2,
+        1024,
+        "0",
+        batch=8,
+        workers=4,
+        amp=False,
+        project="runs/train",
+        name="xh25-baseline",
+        resume=False,
+        pretrained="yolo26s.pt",
+    )
+
+
+@patch("xh_detect.cli.train_model")
+def test_train_command_forwards_finetuning_options(
+    train_model: Mock,
+    tmp_path: Path,
+) -> None:
+    dataset = tmp_path / "dataset.yaml"
+    dataset.write_text("names: {}", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "train",
+            "--dataset-yaml",
+            str(dataset),
+            "--epochs",
+            "2",
+            "--optimizer",
+            "AdamW",
+            "--learning-rate",
+            "0.0001",
+            "--freeze",
+            "11",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert train_model.call_args.kwargs["optimizer"] == "AdamW"
+    assert train_model.call_args.kwargs["learning_rate"] == 1e-4
+    assert train_model.call_args.kwargs["freeze"] == 11
+
+
+@patch("xh_detect.cli.train_model")
+def test_train_command_forwards_density_assignment_options(
+    train_model: Mock,
+    tmp_path: Path,
+) -> None:
+    dataset = tmp_path / "dataset.yaml"
+    dataset.write_text("names: {}", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "train",
+            "--dataset-yaml",
+            str(dataset),
+            "--epochs",
+            "2",
+            "--density-assignment",
+            "--density-constant",
+            "16",
+            "--density-threshold",
+            "0.3",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    train_model.assert_called_once_with(
+        str(dataset),
+        "yolo26s.pt",
+        2,
+        1024,
+        "0",
+        batch=8,
+        workers=4,
+        amp=False,
+        project="runs/train",
+        name="xh25-baseline",
+        resume=False,
+        pretrained=None,
+        density_assignment=True,
+        density_constant=16.0,
+        density_threshold=0.3,
     )
 
 
@@ -296,6 +887,45 @@ def test_evaluate_command_uses_xh25_taxonomy(
     report_to_dict.assert_called_once()
 
 
+@patch("xh_detect.cli.write_competition_proxy_artifacts")
+@patch("xh_detect.cli.load_evaluation_report")
+def test_competition_report_command_writes_artifacts(
+    load_evaluation_report: Mock,
+    write_competition_proxy_artifacts: Mock,
+    tmp_path: Path,
+) -> None:
+    report = tmp_path / "report.json"
+    output = tmp_path / "competition"
+    report.write_text("{}", encoding="utf-8")
+    loaded = object()
+    load_evaluation_report.return_value = loaded
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "competition-report",
+            "--report-json",
+            str(report),
+            "--output-dir",
+            str(output),
+            "--experiment-name",
+            "unit",
+            "--latency-seconds",
+            "12.5",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.strip() == str(output / "competition-proxy.json")
+    load_evaluation_report.assert_called_once_with(report)
+    write_competition_proxy_artifacts.assert_called_once_with(
+        loaded,
+        output_dir=output,
+        experiment_name="unit",
+        latency_seconds=12.5,
+    )
+
+
 @patch("xh_detect.cli.threshold_sweep")
 @patch("xh_detect.cli.load_coco_ground_truth", return_value=[])
 @patch("xh_detect.cli.load_coco_predictions", return_value=[])
@@ -334,6 +964,234 @@ def test_sweep_thresholds_command_writes_json(
     load_predictions.assert_called_once_with(predictions, taxonomy=taxonomy)
     load_truth.assert_called_once_with(truth, taxonomy=taxonomy)
     threshold_sweep.assert_called_once_with([], [], thresholds, taxonomy=taxonomy)
+
+
+@patch("xh_detect.cli.write_threshold_artifacts")
+@patch("xh_detect.cli.optimize_thresholds_search")
+@patch("xh_detect.cli.load_report_objective")
+@patch("xh_detect.cli.load_coco_ground_truth", return_value=["truth"])
+@patch("xh_detect.cli.load_coco_predictions", return_value=["prediction"])
+def test_optimize_thresholds_command_forwards_options(
+    load_predictions: Mock,
+    load_truth: Mock,
+    load_report_objective: Mock,
+    optimize_thresholds_search: Mock,
+    write_threshold_artifacts: Mock,
+    tmp_path: Path,
+) -> None:
+    predictions = tmp_path / "predictions.json"
+    truth = tmp_path / "truth.json"
+    baseline = tmp_path / "baseline-report.json"
+    output = tmp_path / "threshold-optimized"
+    predictions.write_text("[]", encoding="utf-8")
+    truth.write_text('{"annotations":[]}', encoding="utf-8")
+    baseline.write_text("{}", encoding="utf-8")
+    baseline_objective = object()
+    optimized_result = object()
+    load_report_objective.return_value = baseline_objective
+    optimize_thresholds_search.return_value = optimized_result
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "optimize-thresholds",
+            "--predictions-json",
+            str(predictions),
+            "--ground-truth-json",
+            str(truth),
+            "--output-dir",
+            str(output),
+            "--taxonomy",
+            "xh25",
+            "--baseline-report",
+            str(baseline),
+            "--experiment-name",
+            "unit-thresholds",
+            "--thresholds",
+            "0.5,0.2,0.5",
+            "--recall-floor-delta",
+            "0.01",
+            "--tie-epsilon",
+            "0.002",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.strip() == str(output / "report.json")
+    taxonomy = get_taxonomy("xh25")
+    load_predictions.assert_called_once_with(predictions, taxonomy=taxonomy)
+    load_truth.assert_called_once_with(truth, taxonomy=taxonomy)
+    load_report_objective.assert_called_once_with(baseline)
+    optimize_thresholds_search.assert_called_once_with(
+        ["prediction"],
+        ["truth"],
+        taxonomy=taxonomy,
+        thresholds=[0.2, 0.5],
+        baseline_objective=baseline_objective,
+        recall_floor_delta=0.01,
+        tie_epsilon=0.002,
+    )
+    write_threshold_artifacts.assert_called_once_with(
+        optimized_result,
+        output_dir=output,
+        taxonomy=taxonomy,
+        experiment_name="unit-thresholds",
+        baseline_report=baseline,
+    )
+
+
+@patch("xh_detect.cli.write_threshold_artifacts")
+@patch("xh_detect.cli.optimize_thresholds_search")
+@patch("xh_detect.cli.load_report_objective")
+@patch("xh_detect.cli.load_coco_ground_truth", return_value=["truth"])
+@patch("xh_detect.cli.load_coco_predictions", return_value=["prediction"])
+def test_optimize_thresholds_command_uses_default_baseline_report(
+    load_predictions: Mock,
+    load_truth: Mock,
+    load_report_objective: Mock,
+    optimize_thresholds_search: Mock,
+    write_threshold_artifacts: Mock,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    predictions = tmp_path / "predictions.json"
+    truth = tmp_path / "truth.json"
+    default_baseline = Path("outputs/xh25/baseline/report.json")
+    baseline_path = tmp_path / default_baseline
+    output = tmp_path / "threshold-optimized"
+    predictions.write_text("[]", encoding="utf-8")
+    truth.write_text('{"annotations":[]}', encoding="utf-8")
+    baseline_path.parent.mkdir(parents=True)
+    baseline_path.write_text("{}", encoding="utf-8")
+    baseline_objective = object()
+    optimized_result = object()
+    load_report_objective.return_value = baseline_objective
+    optimize_thresholds_search.return_value = optimized_result
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "optimize-thresholds",
+            "--predictions-json",
+            str(predictions),
+            "--ground-truth-json",
+            str(truth),
+            "--output-dir",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    taxonomy = get_taxonomy("xh25")
+    load_predictions.assert_called_once_with(predictions, taxonomy=taxonomy)
+    load_truth.assert_called_once_with(truth, taxonomy=taxonomy)
+    load_report_objective.assert_called_once_with(default_baseline)
+    optimize_thresholds_search.assert_called_once()
+    assert optimize_thresholds_search.call_args.kwargs["baseline_objective"] is baseline_objective
+    write_threshold_artifacts.assert_called_once_with(
+        optimized_result,
+        output_dir=output,
+        taxonomy=taxonomy,
+        experiment_name="xh25-mksnet-lite-threshold-optimized",
+        baseline_report=default_baseline,
+    )
+
+
+def test_optimize_thresholds_command_reports_invalid_threshold_grid(tmp_path: Path) -> None:
+    predictions = tmp_path / "predictions.json"
+    truth = tmp_path / "truth.json"
+    output = tmp_path / "threshold-optimized"
+    predictions.write_text("[]", encoding="utf-8")
+    truth.write_text('{"annotations":[]}', encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "optimize-thresholds",
+            "--predictions-json",
+            str(predictions),
+            "--ground-truth-json",
+            str(truth),
+            "--output-dir",
+            str(output),
+            "--thresholds",
+            "0.25,bad",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "threshold grid value" in result.output or "invalid threshold value" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_optimize_thresholds_command_reports_missing_baseline_report(tmp_path: Path) -> None:
+    predictions = tmp_path / "predictions.json"
+    truth = tmp_path / "truth.json"
+    baseline = tmp_path / "missing-baseline.json"
+    predictions.write_text("[]", encoding="utf-8")
+    truth.write_text('{"annotations":[]}', encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "optimize-thresholds",
+            "--predictions-json",
+            str(predictions),
+            "--ground-truth-json",
+            str(truth),
+            "--baseline-report",
+            str(baseline),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "baseline report does not exist" in result.output
+    assert "Traceback" not in result.output
+
+
+def _minimal_comparison_report() -> dict[str, object]:
+    return {
+        "overall_class_agnostic": {
+            "tp": 1,
+            "fp": 0,
+            "fn": 1,
+            "recall": 0.5,
+            "fdr": 0.0,
+        },
+        "by_coarse_class": {},
+        "by_fine_class": {},
+        "by_image": {},
+    }
+
+
+def test_compare_experiments_command_reports_comparison_value_errors(
+    tmp_path: Path,
+) -> None:
+    baseline_report = tmp_path / "baseline-report.json"
+    experiment_report = tmp_path / "experiment-report.json"
+    baseline_benchmark = tmp_path / "baseline-benchmark.json"
+    baseline_report.write_text(json.dumps(_minimal_comparison_report()), encoding="utf-8")
+    experiment_report.write_text(json.dumps(_minimal_comparison_report()), encoding="utf-8")
+    baseline_benchmark.write_text(json.dumps({"median_s": 1.0}), encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "compare-experiments",
+            "--baseline-report",
+            str(baseline_report),
+            "--experiment-report",
+            str(experiment_report),
+            "--baseline-benchmark",
+            str(baseline_benchmark),
+        ],
+    )
+
+    assert result.exit_code != 0
+    compact_output = "".join(char for char in result.output if char.isalnum() or char == "_")
+    assert "baseline_benchmarkandexperiment_benchmarkmustbeprovidedtogether" in compact_output
+    assert "Traceback" not in result.output
 
 
 @patch("xh_detect.cli.export_coco_results")
@@ -736,6 +1594,71 @@ def test_benchmark_command_creates_missing_image_and_prints_json(
         3,
     )
     assert json.loads(result.stdout) == {"median_s": 1.2, "p95_s": 1.5}
+
+
+def test_benchmark_vehicle_proposals_command_writes_paired_report(tmp_path: Path) -> None:
+    main_config_path = tmp_path / "main.yaml"
+    sph_config_path = tmp_path / "sph.yaml"
+    image_path = tmp_path / "scene.png"
+    output_path = tmp_path / "paired-latency.json"
+    main_config_path.write_text("main", encoding="utf-8")
+    sph_config_path.write_text("sph", encoding="utf-8")
+    image_path.write_bytes(b"image")
+    image = np.zeros((8, 8, 3), dtype=np.uint8)
+    main_config = PipelineConfig(device="cpu", half=False)
+    sph_config = PipelineConfig(device="cpu", half=False)
+    latency_report = SimpleNamespace(proposal_gate_passed=True)
+    payload = {"combined": {"maximum_s": 12.0}, "gate": {"passed": True}}
+
+    with (
+        patch("xh_detect.cli.cv2.imread", return_value=image),
+        patch(
+            "xh_detect.cli.PipelineConfig.from_yaml",
+            side_effect=[main_config, sph_config],
+        ),
+        patch("xh_detect.cli._build_detector", side_effect=["main-detector", "sph-detector"]),
+        patch("xh_detect.cli.InferencePipeline", side_effect=["main-pipeline", "sph-pipeline"]),
+        patch(
+            "xh_detect.cli.benchmark_vehicle_proposal_pair",
+            return_value=latency_report,
+        ) as benchmark_pair,
+        patch("xh_detect.cli.vehicle_latency_report_to_dict", return_value=payload),
+    ):
+        result = CliRunner().invoke(
+            app,
+            [
+                "benchmark-vehicle-proposals",
+                "--main-config-path",
+                str(main_config_path),
+                "--sph-config-path",
+                str(sph_config_path),
+                "--image-path",
+                str(image_path),
+                "--repeats",
+                "3",
+                "--reserve-seconds",
+                "1",
+                "--limit-seconds",
+                "20",
+                "--output-path",
+                str(output_path),
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.strip() == str(output_path)
+    written = json.loads(output_path.read_text(encoding="utf-8"))
+    assert written["image"] == {"path": str(image_path), "synthetic": False}
+    assert written["gate"]["passed"] is True
+    benchmark_pair.assert_called_once_with(
+        "main-pipeline",
+        "sph-pipeline",
+        image,
+        "scene",
+        repeats=3,
+        reserve_seconds=1.0,
+        limit_seconds=20.0,
+    )
 
 
 @patch("xh_detect.cli.torch.cuda.get_device_name")

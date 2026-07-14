@@ -81,10 +81,12 @@ XH25_NAMES = {
 }
 
 LEGACY3_NAMES = {0: "aircraft", 1: "ship", 2: "vehicle"}
+VEHICLE1_NAMES = {0: "vehicle"}
 
 _TAXONOMIES = MappingProxyType(
     {
         "legacy3": Taxonomy("legacy3", LEGACY3_NAMES, LEGACY3_NAMES),
+        "vehicle1": Taxonomy("vehicle1", VEHICLE1_NAMES, VEHICLE1_NAMES),
         "xh25": Taxonomy(
             "xh25",
             XH25_NAMES,

@@ -131,6 +131,93 @@ def test_train_model_passes_official_baseline_options(yolo_class: Mock) -> None:
     )
 
 
+@patch("xh_detect.training.register_custom_modules")
+@patch("xh_detect.training.YOLO")
+def test_train_model_registers_custom_modules_before_model_load(
+    yolo_class: Mock,
+    register_custom_modules: Mock,
+) -> None:
+    events: list[str] = []
+    register_custom_modules.side_effect = lambda: events.append("register")
+    yolo_class.side_effect = lambda model_path: events.append(f"yolo:{model_path}") or Mock()
+
+    train_model("dataset.yaml", "configs/models/xh25-mksnet-lite.yaml", 1, 640, "cpu")
+
+    assert events[:2] == ["register", "yolo:configs/models/xh25-mksnet-lite.yaml"]
+
+
+@patch("xh_detect.training.register_custom_modules")
+@patch("xh_detect.training.YOLO")
+def test_train_model_loads_optional_pretrained_weights(
+    yolo_class: Mock,
+    register_custom_modules: Mock,
+) -> None:
+    model = yolo_class.return_value
+    model.load.return_value = model
+
+    train_model(
+        "dataset.yaml",
+        "configs/models/xh25-mksnet-lite.yaml",
+        1,
+        640,
+        "cpu",
+        pretrained="yolo26s.pt",
+    )
+
+    register_custom_modules.assert_called_once_with()
+    yolo_class.assert_called_once_with("configs/models/xh25-mksnet-lite.yaml")
+    model.load.assert_called_once_with("yolo26s.pt")
+    model.train.assert_called_once()
+
+
+@patch("xh_detect.training.YOLO")
+def test_train_model_uses_density_aware_trainer_when_enabled(yolo_class: Mock) -> None:
+    from xh_detect.models.density_assigner import DensityAwareDetectionTrainer
+
+    model = yolo_class.return_value
+
+    train_model(
+        "dataset.yaml",
+        "yolo26s.pt",
+        1,
+        1024,
+        "0",
+        density_assignment=True,
+        density_constant=12.0,
+        density_threshold=0.25,
+    )
+
+    assert model.train.call_args.kwargs["trainer"] is DensityAwareDetectionTrainer
+    assert DensityAwareDetectionTrainer.density_config.constant == 12.0
+    assert DensityAwareDetectionTrainer.density_config.threshold == 0.25
+
+
+@patch("xh_detect.training.YOLO")
+def test_train_model_forwards_explicit_finetuning_options(yolo_class: Mock) -> None:
+    model = yolo_class.return_value
+
+    train_model(
+        "dataset.yaml",
+        "model.yaml",
+        2,
+        1024,
+        "0",
+        optimizer="AdamW",
+        learning_rate=1e-4,
+        freeze=11,
+        save_period=1,
+        warmup_epochs=0.0,
+        warmup_bias_lr=0.0,
+    )
+
+    assert model.train.call_args.kwargs["optimizer"] == "AdamW"
+    assert model.train.call_args.kwargs["lr0"] == 1e-4
+    assert model.train.call_args.kwargs["freeze"] == 11
+    assert model.train.call_args.kwargs["save_period"] == 1
+    assert model.train.call_args.kwargs["warmup_epochs"] == 0.0
+    assert model.train.call_args.kwargs["warmup_bias_lr"] == 0.0
+
+
 @patch("xh_detect.training.YOLO")
 def test_export_tensorrt_returns_exported_path(yolo_class: Mock) -> None:
     model = yolo_class.return_value
@@ -173,6 +260,10 @@ def test_training_wrappers_validate_arguments(function, args) -> None:
         {"project": ""},
         {"name": ""},
         {"resume": "false"},
+        {"optimizer": ""},
+        {"learning_rate": 0},
+        {"freeze": -1},
+        {"save_period": 0},
     ],
 )
 def test_train_model_validates_reproducible_options(kwargs: dict[str, object]) -> None:

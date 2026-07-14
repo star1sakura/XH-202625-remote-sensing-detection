@@ -54,6 +54,26 @@ class EvaluationReport:
         return self.by_fine_class
 
 
+@dataclass(frozen=True)
+class FalsePositiveSources:
+    overlap: int
+    background: int
+
+    def __post_init__(self) -> None:
+        for name, value in (("overlap", self.overlap), ("background", self.background)):
+            if isinstance(value, bool) or not isinstance(value, Integral) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+
+    @property
+    def total(self) -> int:
+        return self.overlap + self.background
+
+
+@dataclass(frozen=True)
+class FalsePositiveAudit:
+    by_coarse_class: dict[str, FalsePositiveSources]
+
+
 def _validate_class_id(value: object, context: str, taxonomy: Taxonomy) -> int:
     if isinstance(value, bool) or not isinstance(value, Integral):
         raise TypeError(f"{context} category_id must be an integer")
@@ -233,6 +253,75 @@ def evaluate(
         by_fine_class=by_fine_class,
         by_image=by_image,
     )
+
+
+def audit_false_positives(
+    predictions: Iterable[Detection],
+    ground_truth: Iterable[ObjectAnnotation],
+    taxonomy: Taxonomy = get_taxonomy("legacy3"),  # noqa: B008
+) -> FalsePositiveAudit:
+    prediction_items = list(predictions)
+    truth_items = list(ground_truth)
+    for index, item in enumerate(prediction_items):
+        _validate_detection(item, index, taxonomy)
+    for index, item in enumerate(truth_items):
+        _validate_truth(item, index, taxonomy)
+
+    truth_by_group: dict[tuple[str, str], list[ObjectAnnotation]] = defaultdict(list)
+    for item in truth_items:
+        if not item.difficult:
+            truth_by_group[(item.image_id, taxonomy.coarse_name(item.class_id))].append(item)
+
+    matched: dict[tuple[str, str], set[int]] = defaultdict(set)
+    counts: dict[str, list[int]] = {
+        name: [0, 0] for name in sorted(set(taxonomy.coarse_by_id.values()))
+    }
+    indexed_predictions = sorted(
+        enumerate(prediction_items),
+        key=lambda pair: (-pair[1].score, pair[0]),
+    )
+    for _, prediction in indexed_predictions:
+        coarse_name = taxonomy.coarse_name(prediction.class_id)
+        group_key = (prediction.image_id, coarse_name)
+        candidates = truth_by_group.get(group_key, [])
+        prediction_hbb = obb_to_hbb(prediction.polygon)
+        best_index = -1
+        best_iou = -1.0
+        overlaps: list[float] = []
+        for candidate_index, candidate in enumerate(candidates):
+            iou = hbb_iou(prediction_hbb, obb_to_hbb(candidate.polygon))
+            overlaps.append(iou)
+            if candidate_index in matched[group_key]:
+                continue
+            if iou >= _iou_threshold(candidate.class_id, taxonomy) and iou > best_iou:
+                best_iou = iou
+                best_index = candidate_index
+        if best_index >= 0:
+            matched[group_key].add(best_index)
+        elif max(overlaps, default=0.0) > 0.0:
+            counts[coarse_name][0] += 1
+        else:
+            counts[coarse_name][1] += 1
+
+    return FalsePositiveAudit(
+        by_coarse_class={
+            name: FalsePositiveSources(overlap=values[0], background=values[1])
+            for name, values in sorted(counts.items())
+        }
+    )
+
+
+def false_positive_audit_to_dict(audit: FalsePositiveAudit) -> dict[str, object]:
+    return {
+        "by_coarse_class": {
+            name: {
+                "overlap": sources.overlap,
+                "background": sources.background,
+                "total": sources.total,
+            }
+            for name, sources in sorted(audit.by_coarse_class.items())
+        }
+    }
 
 
 def threshold_sweep(

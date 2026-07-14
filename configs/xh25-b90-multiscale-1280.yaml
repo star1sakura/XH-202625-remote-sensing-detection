@@ -1,0 +1,37 @@
+task: detect
+taxonomy: xh25
+model_path: outputs/xh25/all-metrics-search/b90-multiscale/final/best-all-metrics.pt
+device: "0"
+image_size: 1280
+tile_size: 1024
+overlap: 0.2
+batch_size: 8
+merge_iou: 0.3
+edge_margin: 16
+half: true
+class_thresholds:
+  0: 0.01
+  1: 0.01
+  2: 0.01
+  3: 0.01
+  4: 0.01
+  5: 0.01
+  6: 0.01
+  7: 0.01
+  8: 0.01
+  9: 0.01
+  10: 0.01
+  11: 0.01
+  12: 0.01
+  13: 0.01
+  14: 0.01
+  15: 0.01
+  16: 0.01
+  17: 0.01
+  18: 0.01
+  19: 0.01
+  20: 0.01
+  21: 0.01
+  22: 0.01
+  23: 0.01
+  24: 0.01
