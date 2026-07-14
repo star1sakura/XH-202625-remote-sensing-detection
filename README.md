@@ -96,6 +96,14 @@ PyTorch，防止依赖解析器下载另一套 PyTorch/CUDA。普通 CPU 开发�
 短板；细粒度诊断保留 25 类逐类表现。HM、LQS 样本极少，调参时不要只追逐这些
 稀缺类的噪声收益，应同时监控整体和粗粒度表现。
 
+### 当前最优精度候选
+
+当前固定验证集上的精度最优候选使用一个 B90 MKSNet-Lite 检查点，以 1024、1280、
+1536 三个尺度推理并按目标大类融合。它相对 Alpha050-Fine 同时改善三类 Recall/FDR
+和 Ultralytics Precision、Recall、mAP50、mAP50-95，共通过 10/10 精度门槛。完整的
+实验演进、最终指标、复现命令和适用边界见
+[B90 同权重多尺度最优精度方案开发报告](docs/experiments/b90-all-metrics-development-report-zh.md)。
+
 ## 4. MKSNet-Lite 实验
 
 `xh25-mksnet-lite` 是一个 MKSNet-inspired 中等改动实验。它保留现有
