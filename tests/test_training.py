@@ -269,3 +269,60 @@ def test_training_wrappers_validate_arguments(function, args) -> None:
 def test_train_model_validates_reproducible_options(kwargs: dict[str, object]) -> None:
     with pytest.raises((TypeError, ValueError)):
         train_model("data.yaml", "model.pt", 1, 640, "cpu", **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("gcd_loss", "gcd_assignment"),
+    [(True, False), (False, True), (True, True)],
+)
+def test_train_model_uses_gcd_trainer_for_selected_mode(
+    gcd_loss: bool,
+    gcd_assignment: bool,
+) -> None:
+    from xh_detect.models.gcd import GCDDetectionTrainer
+
+    with patch("xh_detect.training.YOLO") as yolo_class:
+        model = yolo_class.return_value
+
+        train_model(
+            "dataset.yaml",
+            "yolo26s.pt",
+            1,
+            1024,
+            "0",
+            gcd_loss=gcd_loss,
+            gcd_assignment=gcd_assignment,
+        )
+
+    assert model.train.call_args.kwargs["trainer"] is GCDDetectionTrainer
+    assert GCDDetectionTrainer.gcd_config.use_loss is gcd_loss
+    assert GCDDetectionTrainer.gcd_config.use_assignment is gcd_assignment
+
+
+@patch("xh_detect.training.YOLO")
+def test_train_model_rejects_density_and_gcd_combination(yolo_class: Mock) -> None:
+    with pytest.raises(ValueError, match="cannot be combined"):
+        train_model(
+            "dataset.yaml",
+            "yolo26s.pt",
+            1,
+            1024,
+            "0",
+            density_assignment=True,
+            gcd_loss=True,
+        )
+
+    yolo_class.assert_not_called()
+
+
+@pytest.mark.parametrize("option", ["gcd_loss", "gcd_assignment"])
+def test_train_model_validates_gcd_flags(option: str) -> None:
+    with pytest.raises(TypeError, match="must be a boolean"):
+        train_model(
+            "dataset.yaml",
+            "yolo26s.pt",
+            1,
+            1024,
+            "0",
+            **{option: "true"},
+        )

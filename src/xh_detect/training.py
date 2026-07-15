@@ -9,6 +9,7 @@ from xh_detect.models.density_assigner import (
     DensityAssignerConfig,
     DensityAwareDetectionTrainer,
 )
+from xh_detect.models.gcd import GCDDetectionTrainer, GCDTrainingConfig
 from xh_detect.models.ultralytics import register_custom_modules
 
 
@@ -64,6 +65,8 @@ def train_model(
     density_assignment: bool = False,
     density_constant: float = 12.0,
     density_threshold: float = 0.25,
+    gcd_loss: bool = False,
+    gcd_assignment: bool = False,
     optimizer: str | None = None,
     learning_rate: float | None = None,
     freeze: int | None = None,
@@ -83,6 +86,11 @@ def train_model(
     name = _non_empty(name, "name")
     resume = _bool(resume, "resume")
     density_assignment = _bool(density_assignment, "density_assignment")
+    gcd_loss = _bool(gcd_loss, "gcd_loss")
+    gcd_assignment = _bool(gcd_assignment, "gcd_assignment")
+    if density_assignment and (gcd_loss or gcd_assignment):
+        raise ValueError("density assignment cannot be combined with GCD training")
+
     pretrained_model = None if pretrained is None else _non_empty(pretrained, "pretrained")
     optimizer_name = None if optimizer is None else _non_empty(optimizer, "optimizer")
     if learning_rate is not None and (
@@ -132,6 +140,12 @@ def train_model(
             threshold=density_threshold,
         )
         train_arguments["trainer"] = DensityAwareDetectionTrainer
+    if gcd_loss or gcd_assignment:
+        GCDDetectionTrainer.gcd_config = GCDTrainingConfig(
+            use_loss=gcd_loss,
+            use_assignment=gcd_assignment,
+        )
+        train_arguments["trainer"] = GCDDetectionTrainer
     if optimizer_name is not None:
         train_arguments["optimizer"] = optimizer_name
     if learning_rate is not None:

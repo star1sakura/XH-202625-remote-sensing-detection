@@ -1678,3 +1678,67 @@ def test_env_command_reports_cpu(
     assert payload["ultralytics"]
     cuda_available.assert_called_once_with()
     get_device_name.assert_not_called()
+
+
+@patch("xh_detect.cli.train_model")
+def test_train_command_forwards_gcd_options(
+    train_model: Mock,
+    tmp_path: Path,
+) -> None:
+    dataset = tmp_path / "dataset.yaml"
+    dataset.write_text("names: {}", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "train",
+            "--dataset-yaml",
+            str(dataset),
+            "--epochs",
+            "2",
+            "--gcd-loss",
+            "--gcd-assignment",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    train_model.assert_called_once_with(
+        str(dataset),
+        "yolo26s.pt",
+        2,
+        1024,
+        "0",
+        batch=8,
+        workers=4,
+        amp=False,
+        project="runs/train",
+        name="xh25-baseline",
+        resume=False,
+        pretrained=None,
+        gcd_loss=True,
+        gcd_assignment=True,
+    )
+
+
+@patch("xh_detect.cli.train_model")
+def test_train_command_rejects_density_and_gcd(
+    train_model: Mock,
+    tmp_path: Path,
+) -> None:
+    dataset = tmp_path / "dataset.yaml"
+    dataset.write_text("names: {}", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "train",
+            "--dataset-yaml",
+            str(dataset),
+            "--density-assignment",
+            "--gcd-loss",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "cannot be combined" in result.output
+    train_model.assert_not_called()

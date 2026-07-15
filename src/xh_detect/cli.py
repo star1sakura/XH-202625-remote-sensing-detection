@@ -659,6 +659,8 @@ def train(
     density_assignment: Annotated[bool, typer.Option()] = False,
     density_constant: Annotated[float, typer.Option(min=0.001)] = 12.0,
     density_threshold: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.25,
+    gcd_loss: Annotated[bool, typer.Option()] = False,
+    gcd_assignment: Annotated[bool, typer.Option()] = False,
     optimizer: Annotated[str | None, typer.Option()] = None,
     learning_rate: Annotated[float | None, typer.Option(min=0.0000001)] = None,
     freeze: Annotated[int | None, typer.Option(min=0)] = None,
@@ -666,12 +668,21 @@ def train(
     warmup_epochs: Annotated[float | None, typer.Option(min=0.0)] = None,
     warmup_bias_lr: Annotated[float | None, typer.Option(min=0.0)] = None,
 ) -> None:
+    if density_assignment and (gcd_loss or gcd_assignment):
+        raise typer.BadParameter("density assignment cannot be combined with GCD training")
+
     density_options: dict[str, object] = {}
     if density_assignment:
         density_options = {
             "density_assignment": True,
             "density_constant": density_constant,
             "density_threshold": density_threshold,
+        }
+    gcd_options: dict[str, object] = {}
+    if gcd_loss or gcd_assignment:
+        gcd_options = {
+            "gcd_loss": gcd_loss,
+            "gcd_assignment": gcd_assignment,
         }
     tuning_options: dict[str, object] = {}
     if optimizer is not None:
@@ -700,6 +711,7 @@ def train(
         resume=resume,
         pretrained=pretrained,
         **density_options,
+        **gcd_options,
         **tuning_options,
     )
 
