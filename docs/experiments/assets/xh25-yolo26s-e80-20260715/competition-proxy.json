@@ -1,0 +1,60 @@
+{
+  "experiment_name": "xh25-yolo26s-e80-20260715-best-conf025",
+  "recommendation": "pass_candidate",
+  "hard_gates": {
+    "overall_recall": {
+      "value": 0.9587724736515809,
+      "threshold": 0.85,
+      "passed": true
+    },
+    "overall_fdr": {
+      "value": 0.04003724394785847,
+      "threshold": 0.2,
+      "passed": true
+    },
+    "latency_seconds": {
+      "value": null,
+      "threshold": 20.0,
+      "passed": null
+    }
+  },
+  "overall": {
+    "tp": 3093,
+    "fp": 129,
+    "fn": 133,
+    "recall": 0.9587724736515809,
+    "fdr": 0.04003724394785847
+  },
+  "coarse": {
+    "ship": {
+      "tp": 322,
+      "fp": 59,
+      "fn": 80,
+      "recall": 0.8009950248756219,
+      "fdr": 0.15485564304461943
+    },
+    "aircraft": {
+      "tp": 2713,
+      "fp": 59,
+      "fn": 33,
+      "recall": 0.9879825200291333,
+      "fdr": 0.021284271284271284
+    },
+    "vehicle": {
+      "tp": 58,
+      "fp": 11,
+      "fn": 20,
+      "recall": 0.7435897435897436,
+      "fdr": 0.15942028985507245
+    }
+  },
+  "ranking_proxy": {
+    "ship_recall": 0.8009950248756219,
+    "ship_fdr": 0.15485564304461943,
+    "aircraft_recall": 0.9879825200291333,
+    "aircraft_fdr": 0.021284271284271284,
+    "vehicle_recall": 0.7435897435897436,
+    "vehicle_fdr": 0.15942028985507245,
+    "overall_timeliness_seconds": null
+  }
+}
