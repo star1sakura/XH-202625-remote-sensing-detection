@@ -68,6 +68,7 @@ def train_model(
     density_threshold: float = 0.25,
     gcd_loss: bool = False,
     gcd_assignment: bool = False,
+    gcd_assignment_weight: float = 1.0,
     optimizer: str | None = None,
     learning_rate: float | None = None,
     freeze: int | None = None,
@@ -90,6 +91,16 @@ def train_model(
     density_assignment = _bool(density_assignment, "density_assignment")
     gcd_loss = _bool(gcd_loss, "gcd_loss")
     gcd_assignment = _bool(gcd_assignment, "gcd_assignment")
+    if (
+        isinstance(gcd_assignment_weight, bool)
+        or not isinstance(gcd_assignment_weight, (int, float))
+        or not math.isfinite(gcd_assignment_weight)
+        or not 0.0 <= gcd_assignment_weight <= 1.0
+    ):
+        raise ValueError("gcd_assignment_weight must be finite and in [0, 1]")
+    gcd_assignment_weight = float(gcd_assignment_weight)
+    if not gcd_assignment and gcd_assignment_weight != 1.0:
+        raise ValueError("gcd_assignment_weight requires gcd_assignment")
     if density_assignment and (gcd_loss or gcd_assignment):
         raise ValueError("density assignment cannot be combined with GCD training")
 
@@ -146,6 +157,7 @@ def train_model(
         GCDDetectionTrainer.gcd_config = GCDTrainingConfig(
             use_loss=gcd_loss,
             use_assignment=gcd_assignment,
+            assignment_weight=gcd_assignment_weight,
         )
         train_arguments["trainer"] = GCDDetectionTrainer
     if optimizer_name is not None:

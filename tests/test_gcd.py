@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 import torch
 from torch import nn
 from ultralytics.utils.loss import BboxLoss, E2ELoss
+from ultralytics.utils.tal import TaskAlignedAssigner
 
 
 def _official_gcd_reference(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
@@ -115,6 +117,47 @@ def test_gcd_assigner_supports_ultralytics_broadcast_shapes() -> None:
     assert torch.all((overlaps >= 0.0) & (overlaps <= 1.0))
 
 
+def test_gcd_assigner_blend_matches_endpoints_and_has_finite_gradients() -> None:
+    from xh_detect.models.gcd import GCDTaskAlignedAssigner
+
+    arguments = {
+        "topk": 3,
+        "num_classes": 25,
+        "alpha": 0.5,
+        "beta": 6.0,
+        "stride": [8, 16, 32],
+    }
+    truth = torch.tensor([[[[0.0, 0.0, 10.0, 10.0]]]])
+    predicted = torch.tensor(
+        [[[[1.0, 0.0, 11.0, 10.0], [5.0, 2.0, 15.0, 12.0]]]], requires_grad=True
+    )
+    ciou = TaskAlignedAssigner(**arguments).iou_calculation(truth, predicted)
+    gcd = GCDTaskAlignedAssigner(**arguments, assignment_weight=1.0).iou_calculation(
+        truth, predicted
+    )
+    ciou_endpoint = GCDTaskAlignedAssigner(**arguments, assignment_weight=0.0).iou_calculation(
+        truth, predicted
+    )
+    blended = GCDTaskAlignedAssigner(**arguments, assignment_weight=0.25).iou_calculation(
+        truth, predicted
+    )
+
+    assert torch.equal(ciou_endpoint, ciou)
+    assert torch.equal(gcd, GCDTaskAlignedAssigner(**arguments).iou_calculation(truth, predicted))
+    assert torch.allclose(blended, 0.75 * ciou + 0.25 * gcd)
+    blended.sum().backward()
+    assert predicted.grad is not None
+    assert torch.isfinite(predicted.grad).all()
+
+
+@pytest.mark.parametrize("weight", [-0.1, 1.1, float("nan"), True])
+def test_gcd_assignment_weight_validation(weight: object) -> None:
+    from xh_detect.models.gcd import GCDTrainingConfig
+
+    with pytest.raises(ValueError, match="assignment_weight"):
+        GCDTrainingConfig(assignment_weight=weight)  # type: ignore[arg-type]
+
+
 def test_gcd_bbox_loss_preserves_dfl() -> None:
     from xh_detect.models.gcd import GCDBboxLoss
 
@@ -209,3 +252,26 @@ def test_gcd_detection_model_preserves_yolo26_end_to_end_loss() -> None:
     assert isinstance(loss.one2many.assigner, GCDTaskAlignedAssigner)
     assert isinstance(loss.one2one.assigner, GCDTaskAlignedAssigner)
     assert loss.one2one.assigner.topk2 == 1
+
+
+def test_gcd_detection_model_blends_both_yolo26_assignment_branches() -> None:
+    from xh_detect.models.gcd import GCDDetectionModel, GCDTrainingConfig
+
+    model = GCDDetectionModel(
+        "yolo26n.yaml",
+        nc=25,
+        ch=3,
+        verbose=False,
+        gcd_config=GCDTrainingConfig(
+            use_loss=True,
+            use_assignment=True,
+            assignment_weight=0.5,
+        ),
+    )
+    model.args = SimpleNamespace()
+
+    loss = model.init_criterion()
+
+    assert isinstance(loss, E2ELoss)
+    assert loss.one2many.assigner.assignment_weight == 0.5
+    assert loss.one2one.assigner.assignment_weight == 0.5

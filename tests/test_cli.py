@@ -1751,6 +1751,56 @@ def test_train_command_rejects_density_and_gcd(
     train_model.assert_not_called()
 
 
+@patch("xh_detect.cli.train_model")
+def test_train_command_forwards_gcd_assignment_weight(
+    train_model: Mock,
+    tmp_path: Path,
+) -> None:
+    dataset = tmp_path / "dataset.yaml"
+    dataset.write_text("names: {}", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "train",
+            "--dataset-yaml",
+            str(dataset),
+            "--gcd-loss",
+            "--gcd-assignment",
+            "--gcd-assignment-weight",
+            "0.25",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert train_model.call_args.kwargs["gcd_assignment_weight"] == 0.25
+
+
+@patch("xh_detect.cli.train_model")
+def test_train_command_rejects_assignment_weight_without_gcd_assigner(
+    train_model: Mock,
+    tmp_path: Path,
+) -> None:
+    dataset = tmp_path / "dataset.yaml"
+    dataset.write_text("names: {}", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "train",
+            "--dataset-yaml",
+            str(dataset),
+            "--gcd-loss",
+            "--gcd-assignment-weight",
+            "0.5",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "requires --gcd-assignment" in result.output
+    train_model.assert_not_called()
+
+
 def test_calibrate_thresholds_command_writes_passing_grouped_oof_artifacts(
     tmp_path: Path,
 ) -> None:

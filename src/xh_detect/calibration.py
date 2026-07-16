@@ -77,6 +77,57 @@ class CalibrationResult:
         return self.status == "passed"
 
 
+@dataclass(frozen=True)
+class ShipOverrideThresholdCandidate:
+    ship_threshold: float
+    general_threshold: float
+    report: EvaluationReport
+    objective: ObjectiveScore
+
+
+@dataclass(frozen=True)
+class ShipOverrideFoldCalibration:
+    fold: int
+    selected_ship_threshold: float | None
+    selected_general_threshold: float | None
+    eligible_thresholds: tuple[tuple[float, float], ...]
+    recall_floor: float
+    fdr_cap: float
+    ship_recall_floor: float
+    ship_fdr_cap: float
+    baseline_calibration: EvaluationReport
+    candidate_calibration: EvaluationReport | None
+    baseline_holdout: EvaluationReport
+    candidate_holdout: EvaluationReport | None
+
+
+@dataclass(frozen=True)
+class ShipOverrideCalibrationResult:
+    status: str
+    failure_reason: str | None
+    seed: int
+    folds: int
+    raw_threshold: float
+    grid: tuple[float, ...]
+    group_to_fold: dict[str, int]
+    image_to_fold: dict[str, int]
+    image_to_group: dict[str, str]
+    fold_results: tuple[ShipOverrideFoldCalibration, ...]
+    baseline_oof_report: EvaluationReport
+    candidate_oof_report: EvaluationReport | None
+    final_ship_threshold: float | None
+    final_general_threshold: float | None
+    ship_threshold_range: float | None
+    general_threshold_range: float | None
+    worst_fold_ship_fdr: float | None
+    acceptance: dict[str, dict[str, object]]
+    oof_predictions: tuple[Detection, ...]
+
+    @property
+    def passed(self) -> bool:
+        return self.status == "passed"
+
+
 def _load_json(path: Path | str, label: str) -> object:
     source = Path(path)
     try:
@@ -291,6 +342,72 @@ def _filter_at_threshold(predictions: Sequence[Detection], threshold: float) -> 
     return [prediction for prediction in predictions if prediction.score >= threshold]
 
 
+def _filter_at_ship_override_thresholds(
+    predictions: Sequence[Detection],
+    taxonomy: Taxonomy,
+    *,
+    ship_threshold: float,
+    general_threshold: float,
+) -> list[Detection]:
+    return [
+        prediction
+        for prediction in predictions
+        if prediction.score
+        >= (
+            ship_threshold
+            if taxonomy.coarse_name(prediction.class_id) == "ship"
+            else general_threshold
+        )
+    ]
+
+
+def select_ship_override_candidate(
+    candidates: Sequence[ShipOverrideThresholdCandidate],
+    *,
+    recall_floor: float,
+    fdr_cap: float,
+    ship_recall_floor: float,
+    ship_fdr_cap: float,
+    tie_epsilon: float = 0.0001,
+) -> tuple[ShipOverrideThresholdCandidate | None, tuple[tuple[float, float], ...]]:
+    recall_floor = _validate_probability(recall_floor, "recall_floor")
+    fdr_cap = _validate_probability(fdr_cap, "fdr_cap")
+    ship_recall_floor = _validate_probability(ship_recall_floor, "ship_recall_floor")
+    ship_fdr_cap = _validate_probability(ship_fdr_cap, "ship_fdr_cap")
+    if isinstance(tie_epsilon, bool) or not isinstance(tie_epsilon, Real):
+        raise TypeError("tie_epsilon must be finite and non-negative")
+    tie_epsilon = float(tie_epsilon)
+    if not math.isfinite(tie_epsilon) or tie_epsilon < 0:
+        raise ValueError("tie_epsilon must be finite and non-negative")
+    eligible = []
+    for candidate in candidates:
+        ship = candidate.report.by_coarse_class["ship"]
+        if (
+            candidate.objective.recall >= recall_floor
+            and candidate.objective.fdr <= fdr_cap
+            and ship.recall >= ship_recall_floor
+            and ship.fdr <= ship_fdr_cap
+        ):
+            eligible.append(candidate)
+    if not eligible:
+        return None, ()
+    best_f1 = max(candidate.objective.f1 for candidate in eligible)
+    tied = [candidate for candidate in eligible if candidate.objective.f1 >= best_f1 - tie_epsilon]
+    selected = min(
+        tied,
+        key=lambda candidate: (
+            candidate.report.by_coarse_class["ship"].fdr,
+            candidate.objective.fdr,
+            -candidate.objective.recall,
+            candidate.ship_threshold,
+            candidate.general_threshold,
+        ),
+    )
+    return selected, tuple(
+        (candidate.ship_threshold, candidate.general_threshold) for candidate in eligible
+    )
+
+
 def _acceptance_check(value: float, operator: str, limit: float) -> dict[str, object]:
     passed = value >= limit if operator == ">=" else value <= limit
     return {"value": value, "operator": operator, "limit": limit, "passed": passed}
@@ -472,6 +589,233 @@ def calibrate_thresholds(
     )
 
 
+def calibrate_ship_override_thresholds(
+    baseline_predictions: Sequence[Detection],
+    candidate_predictions: Sequence[Detection],
+    ground_truth: Sequence[ObjectAnnotation],
+    image_to_group: Mapping[str, str],
+    taxonomy: Taxonomy,
+    *,
+    folds: int = 5,
+    seed: int = 42,
+    thresholds: str | Sequence[float] = DEFAULT_CALIBRATION_GRID,
+    raw_threshold: float = 0.25,
+    recall_floor_delta: float = 0.005,
+    fdr_cap_delta: float = 0.005,
+    ship_recall_floor: float = 0.80,
+    ship_fdr_cap: float = 0.17,
+    tie_epsilon: float = 0.0001,
+    acceptance_recall: float = 0.953772,
+    acceptance_fdr: float = 0.045037,
+    acceptance_ship_recall: float = 0.80,
+    acceptance_ship_fdr: float = 0.18,
+    acceptance_worst_fold_ship_fdr: float = 0.25,
+    acceptance_threshold_range: float = 0.05,
+) -> ShipOverrideCalibrationResult:
+    grid = tuple(parse_threshold_grid(thresholds))
+    seed = _validate_non_negative_int(seed, "seed")
+    raw_threshold = _validate_probability(raw_threshold, "raw_threshold")
+    recall_floor_delta = _validate_probability(recall_floor_delta, "recall_floor_delta")
+    fdr_cap_delta = _validate_probability(fdr_cap_delta, "fdr_cap_delta")
+    ship_recall_floor = _validate_probability(ship_recall_floor, "ship_recall_floor")
+    ship_fdr_cap = _validate_probability(ship_fdr_cap, "ship_fdr_cap")
+    acceptance_recall = _validate_probability(acceptance_recall, "acceptance_recall")
+    acceptance_fdr = _validate_probability(acceptance_fdr, "acceptance_fdr")
+    acceptance_ship_recall = _validate_probability(acceptance_ship_recall, "acceptance_ship_recall")
+    acceptance_ship_fdr = _validate_probability(acceptance_ship_fdr, "acceptance_ship_fdr")
+    acceptance_worst_fold_ship_fdr = _validate_probability(
+        acceptance_worst_fold_ship_fdr, "acceptance_worst_fold_ship_fdr"
+    )
+    acceptance_threshold_range = _validate_probability(
+        acceptance_threshold_range, "acceptance_threshold_range"
+    )
+    image_ids = set(image_to_group)
+    if not image_ids:
+        raise ValueError("image groups must not be empty")
+    for label, items in (
+        ("baseline predictions", baseline_predictions),
+        ("candidate predictions", candidate_predictions),
+        ("ground truth", ground_truth),
+    ):
+        unknown = sorted({item.image_id for item in items} - image_ids)
+        if unknown:
+            raise ValueError(f"{label} contain unmapped image IDs: {unknown[:3]}")
+
+    group_to_fold = build_group_folds(
+        image_to_group, ground_truth, taxonomy, folds=folds, seed=seed
+    )
+    image_to_fold = {image_id: group_to_fold[group] for image_id, group in image_to_group.items()}
+    raw_baseline = _filter_at_threshold(baseline_predictions, raw_threshold)
+    fold_results: list[ShipOverrideFoldCalibration] = []
+    oof_baseline: list[Detection] = []
+    oof_candidate: list[Detection] = []
+    selected_ship_thresholds: list[float] = []
+    selected_general_thresholds: list[float] = []
+    failure_reason: str | None = None
+
+    for fold in range(folds):
+        holdout_ids = {image_id for image_id, value in image_to_fold.items() if value == fold}
+        calibration_ids = image_ids - holdout_ids
+        baseline_calibration = evaluate(
+            _items_for_images(raw_baseline, calibration_ids),
+            _items_for_images(ground_truth, calibration_ids),
+            taxonomy=taxonomy,
+        )
+        baseline_objective = objective_from_report(baseline_calibration)
+        recall_floor = max(0.0, baseline_objective.recall - recall_floor_delta)
+        fdr_cap = min(1.0, baseline_objective.fdr + fdr_cap_delta)
+        calibration_candidate_predictions = _items_for_images(
+            candidate_predictions, calibration_ids
+        )
+        calibration_truth = _items_for_images(ground_truth, calibration_ids)
+        candidates: list[ShipOverrideThresholdCandidate] = []
+        for ship_threshold in grid:
+            for general_threshold in grid:
+                report = evaluate(
+                    _filter_at_ship_override_thresholds(
+                        calibration_candidate_predictions,
+                        taxonomy,
+                        ship_threshold=ship_threshold,
+                        general_threshold=general_threshold,
+                    ),
+                    calibration_truth,
+                    taxonomy=taxonomy,
+                )
+                candidates.append(
+                    ShipOverrideThresholdCandidate(
+                        ship_threshold=ship_threshold,
+                        general_threshold=general_threshold,
+                        report=report,
+                        objective=objective_from_report(report),
+                    )
+                )
+        selected, eligible_thresholds = select_ship_override_candidate(
+            candidates,
+            recall_floor=recall_floor,
+            fdr_cap=fdr_cap,
+            ship_recall_floor=ship_recall_floor,
+            ship_fdr_cap=ship_fdr_cap,
+            tie_epsilon=tie_epsilon,
+        )
+        baseline_holdout_predictions = _items_for_images(raw_baseline, holdout_ids)
+        baseline_holdout = evaluate(
+            baseline_holdout_predictions,
+            _items_for_images(ground_truth, holdout_ids),
+            taxonomy=taxonomy,
+        )
+        oof_baseline.extend(baseline_holdout_predictions)
+        candidate_holdout = None
+        candidate_calibration = None
+        if selected is None:
+            failure_reason = failure_reason or (
+                f"fold {fold} has no ship/general threshold pair satisfying its gates"
+            )
+        else:
+            selected_ship_thresholds.append(selected.ship_threshold)
+            selected_general_thresholds.append(selected.general_threshold)
+            candidate_calibration = selected.report
+            holdout_predictions = _filter_at_ship_override_thresholds(
+                _items_for_images(candidate_predictions, holdout_ids),
+                taxonomy,
+                ship_threshold=selected.ship_threshold,
+                general_threshold=selected.general_threshold,
+            )
+            candidate_holdout = evaluate(
+                holdout_predictions,
+                _items_for_images(ground_truth, holdout_ids),
+                taxonomy=taxonomy,
+            )
+            oof_candidate.extend(holdout_predictions)
+        fold_results.append(
+            ShipOverrideFoldCalibration(
+                fold=fold,
+                selected_ship_threshold=None if selected is None else selected.ship_threshold,
+                selected_general_threshold=(
+                    None if selected is None else selected.general_threshold
+                ),
+                eligible_thresholds=eligible_thresholds,
+                recall_floor=recall_floor,
+                fdr_cap=fdr_cap,
+                ship_recall_floor=ship_recall_floor,
+                ship_fdr_cap=ship_fdr_cap,
+                baseline_calibration=baseline_calibration,
+                candidate_calibration=candidate_calibration,
+                baseline_holdout=baseline_holdout,
+                candidate_holdout=candidate_holdout,
+            )
+        )
+
+    baseline_oof_report = evaluate(oof_baseline, ground_truth, taxonomy=taxonomy)
+    candidate_oof_report = None
+    final_ship_threshold = None
+    final_general_threshold = None
+    ship_threshold_range = None
+    general_threshold_range = None
+    worst_fold_ship_fdr = None
+    acceptance: dict[str, dict[str, object]] = {}
+    status = "failed"
+    if len(selected_ship_thresholds) == folds:
+        sorted_ship = sorted(selected_ship_thresholds)
+        sorted_general = sorted(selected_general_thresholds)
+        final_ship_threshold = sorted_ship[folds // 2]
+        final_general_threshold = sorted_general[folds // 2]
+        ship_threshold_range = max(sorted_ship) - min(sorted_ship)
+        general_threshold_range = max(sorted_general) - min(sorted_general)
+        candidate_oof_report = evaluate(oof_candidate, ground_truth, taxonomy=taxonomy)
+        overall = candidate_oof_report.overall_class_agnostic
+        ship = candidate_oof_report.by_coarse_class["ship"]
+        worst_fold_ship_fdr = max(
+            fold.candidate_holdout.by_coarse_class["ship"].fdr
+            for fold in fold_results
+            if fold.candidate_holdout is not None
+        )
+        acceptance = {
+            "oof_recall": _acceptance_check(overall.recall, ">=", acceptance_recall),
+            "oof_fdr": _acceptance_check(overall.fdr, "<=", acceptance_fdr),
+            "ship_recall": _acceptance_check(ship.recall, ">=", acceptance_ship_recall),
+            "ship_fdr": _acceptance_check(ship.fdr, "<=", acceptance_ship_fdr),
+            "worst_fold_ship_fdr": _acceptance_check(
+                worst_fold_ship_fdr, "<=", acceptance_worst_fold_ship_fdr
+            ),
+            "ship_threshold_range": _acceptance_check(
+                ship_threshold_range, "<=", acceptance_threshold_range
+            ),
+            "general_threshold_range": _acceptance_check(
+                general_threshold_range, "<=", acceptance_threshold_range
+            ),
+        }
+        if all(bool(check["passed"]) for check in acceptance.values()):
+            status = "passed"
+            failure_reason = None
+        else:
+            failed_checks = ", ".join(
+                name for name, check in acceptance.items() if not check["passed"]
+            )
+            failure_reason = f"acceptance checks failed: {failed_checks}"
+
+    return ShipOverrideCalibrationResult(
+        status=status,
+        failure_reason=failure_reason,
+        seed=seed,
+        folds=folds,
+        raw_threshold=raw_threshold,
+        grid=grid,
+        group_to_fold=group_to_fold,
+        image_to_fold=image_to_fold,
+        image_to_group=dict(image_to_group),
+        fold_results=tuple(fold_results),
+        baseline_oof_report=baseline_oof_report,
+        candidate_oof_report=candidate_oof_report,
+        final_ship_threshold=final_ship_threshold,
+        final_general_threshold=final_general_threshold,
+        ship_threshold_range=ship_threshold_range,
+        general_threshold_range=general_threshold_range,
+        worst_fold_ship_fdr=worst_fold_ship_fdr,
+        acceptance=acceptance,
+        oof_predictions=tuple(oof_candidate),
+    )
+
+
 def _fold_to_dict(fold: FoldCalibration) -> dict[str, object]:
     return {
         "fold": fold.fold,
@@ -503,6 +847,61 @@ def calibration_result_to_dict(result: CalibrationResult) -> dict[str, object]:
         "selected_thresholds": [fold.selected_threshold for fold in result.fold_results],
         "final_threshold": result.final_threshold,
         "threshold_range": result.threshold_range,
+        "acceptance": result.acceptance,
+        "baseline_oof_report": report_to_dict(result.baseline_oof_report),
+        "candidate_oof_report": (
+            None
+            if result.candidate_oof_report is None
+            else report_to_dict(result.candidate_oof_report)
+        ),
+    }
+
+
+def _ship_override_fold_to_dict(fold: ShipOverrideFoldCalibration) -> dict[str, object]:
+    return {
+        "fold": fold.fold,
+        "selected_ship_threshold": fold.selected_ship_threshold,
+        "selected_general_threshold": fold.selected_general_threshold,
+        "eligible_thresholds": [
+            {"ship": ship, "general": general} for ship, general in fold.eligible_thresholds
+        ],
+        "recall_floor": fold.recall_floor,
+        "fdr_cap": fold.fdr_cap,
+        "ship_recall_floor": fold.ship_recall_floor,
+        "ship_fdr_cap": fold.ship_fdr_cap,
+        "baseline_calibration": report_to_dict(fold.baseline_calibration),
+        "candidate_calibration": (
+            None
+            if fold.candidate_calibration is None
+            else report_to_dict(fold.candidate_calibration)
+        ),
+        "baseline_holdout": report_to_dict(fold.baseline_holdout),
+        "candidate_holdout": (
+            None if fold.candidate_holdout is None else report_to_dict(fold.candidate_holdout)
+        ),
+    }
+
+
+def ship_override_calibration_result_to_dict(
+    result: ShipOverrideCalibrationResult,
+) -> dict[str, object]:
+    return {
+        "strategy": "ship-override",
+        "status": result.status,
+        "failure_reason": result.failure_reason,
+        "seed": result.seed,
+        "folds": result.folds,
+        "raw_threshold": result.raw_threshold,
+        "threshold_grid": list(result.grid),
+        "selected_ship_thresholds": [fold.selected_ship_threshold for fold in result.fold_results],
+        "selected_general_thresholds": [
+            fold.selected_general_threshold for fold in result.fold_results
+        ],
+        "final_ship_threshold": result.final_ship_threshold,
+        "final_general_threshold": result.final_general_threshold,
+        "ship_threshold_range": result.ship_threshold_range,
+        "general_threshold_range": result.general_threshold_range,
+        "worst_fold_ship_fdr": result.worst_fold_ship_fdr,
         "acceptance": result.acceptance,
         "baseline_oof_report": report_to_dict(result.baseline_oof_report),
         "candidate_oof_report": (
@@ -597,6 +996,90 @@ def write_calibration_artifacts(
             "global_threshold": result.final_threshold,
             "class_thresholds": {
                 class_id: result.final_threshold for class_id in sorted(taxonomy.valid_ids)
+            },
+        }
+        _write_yaml(threshold_path, threshold_payload)
+        paths["thresholds"] = threshold_path
+
+        if (base_config is None) != (calibrated_config is None):
+            raise ValueError("base_config and calibrated_config must be provided together")
+        if base_config is not None and calibrated_config is not None:
+            base_path = Path(base_config)
+            payload = yaml.safe_load(base_path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("base config YAML root must be an object")
+            payload["class_thresholds"] = threshold_payload["class_thresholds"]
+            config_path = Path(calibrated_config)
+            _write_yaml(config_path, payload)
+            paths["config"] = config_path
+    elif base_config is not None or calibrated_config is not None:
+        raise ValueError("cannot write a calibrated config for failed calibration")
+    return paths
+
+
+def write_ship_override_calibration_artifacts(
+    result: ShipOverrideCalibrationResult,
+    output_dir: Path | str,
+    taxonomy: Taxonomy,
+    *,
+    base_config: Path | str | None = None,
+    calibrated_config: Path | str | None = None,
+) -> dict[str, Path]:
+    destination = Path(output_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+    paths = {
+        "summary": destination / "calibration-summary.json",
+        "fold_assignments": destination / "fold-assignments.json",
+        "fold_results": destination / "fold-results.json",
+        "oof_report": destination / "oof-report.json",
+        "oof_predictions": destination / "oof-predictions.json",
+    }
+    _write_json(paths["summary"], ship_override_calibration_result_to_dict(result))
+    _write_json(
+        paths["fold_assignments"],
+        {
+            "seed": result.seed,
+            "folds": result.folds,
+            "group_to_fold": result.group_to_fold,
+            "image_to_fold": result.image_to_fold,
+            "image_to_group": result.image_to_group,
+        },
+    )
+    _write_json(
+        paths["fold_results"],
+        [_ship_override_fold_to_dict(fold) for fold in result.fold_results],
+    )
+    _write_json(
+        paths["oof_report"],
+        {
+            "baseline": report_to_dict(result.baseline_oof_report),
+            "candidate": (
+                None
+                if result.candidate_oof_report is None
+                else report_to_dict(result.candidate_oof_report)
+            ),
+        },
+    )
+    _write_json(
+        paths["oof_predictions"],
+        [_coco_detection(detection) for detection in result.oof_predictions],
+    )
+
+    if result.passed:
+        if result.final_ship_threshold is None or result.final_general_threshold is None:
+            raise ValueError("passed ship-override calibration must contain both thresholds")
+        threshold_path = destination / "calibrated-thresholds.yaml"
+        threshold_payload = {
+            "strategy": "ship-override",
+            "ship_threshold": result.final_ship_threshold,
+            "general_threshold": result.final_general_threshold,
+            "class_thresholds": {
+                class_id: (
+                    result.final_ship_threshold
+                    if taxonomy.coarse_name(class_id) == "ship"
+                    else result.final_general_threshold
+                )
+                for class_id in sorted(taxonomy.valid_ids)
             },
         }
         _write_yaml(threshold_path, threshold_payload)

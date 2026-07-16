@@ -10,10 +10,12 @@ import yaml
 from xh_detect.calibration import (
     ThresholdCandidate,
     build_group_folds,
+    calibrate_ship_override_thresholds,
     calibrate_thresholds,
     load_image_group_mapping,
     select_threshold_candidate,
     write_calibration_artifacts,
+    write_ship_override_calibration_artifacts,
 )
 from xh_detect.evaluator import evaluate
 from xh_detect.taxonomy import get_taxonomy
@@ -27,8 +29,8 @@ def _polygon(x: float = 0.0, y: float = 0.0) -> tuple[tuple[float, float], ...]:
     return ((x, y), (x + 10.0, y), (x + 10.0, y + 10.0), (x, y + 10.0))
 
 
-def _truth(image_id: str, class_id: int = 0) -> ObjectAnnotation:
-    return ObjectAnnotation(image_id=image_id, class_id=class_id, polygon=_polygon())
+def _truth(image_id: str, class_id: int = 0, *, x: float = 0.0) -> ObjectAnnotation:
+    return ObjectAnnotation(image_id=image_id, class_id=class_id, polygon=_polygon(x))
 
 
 def _prediction(
@@ -37,12 +39,13 @@ def _prediction(
     *,
     class_id: int = 0,
     false_positive: bool = False,
+    x: float = 0.0,
 ) -> Detection:
     return Detection(
         image_id=image_id,
         class_id=class_id,
         score=score,
-        polygon=_polygon(100.0 if false_positive else 0.0),
+        polygon=_polygon(100.0 + x if false_positive else x),
     )
 
 
@@ -58,6 +61,40 @@ def _synthetic_inputs() -> tuple[
         for detection in (
             _prediction(image_id, 0.9),
             _prediction(image_id, 0.4, false_positive=True),
+        )
+    ]
+    image_to_group = {image_id: f"source-{image_id}" for image_id in image_ids}
+    return baseline, candidate, truth, image_to_group
+
+
+def _synthetic_ship_override_inputs() -> tuple[
+    list[Detection], list[Detection], list[ObjectAnnotation], dict[str, str]
+]:
+    image_ids = [str(index) for index in range(1, 7)]
+    truth = [
+        annotation
+        for image_id in image_ids
+        for annotation in (
+            _truth(image_id, class_id=0),
+            _truth(image_id, class_id=4, x=20.0),
+        )
+    ]
+    baseline = [
+        prediction
+        for image_id in image_ids
+        for prediction in (
+            _prediction(image_id, 0.9, class_id=0),
+            _prediction(image_id, 0.9, class_id=4, x=20.0),
+        )
+    ]
+    candidate = [
+        prediction
+        for image_id in image_ids
+        for prediction in (
+            _prediction(image_id, 0.9, class_id=0),
+            _prediction(image_id, 0.4, class_id=0, false_positive=True),
+            _prediction(image_id, 0.9, class_id=4, x=20.0),
+            _prediction(image_id, 0.3, class_id=4, false_positive=True, x=20.0),
         )
     ]
     image_to_group = {image_id: f"source-{image_id}" for image_id in image_ids}
@@ -166,6 +203,80 @@ def test_calibration_reports_failure_when_a_fold_has_no_eligible_threshold() -> 
     assert result.final_threshold is None
     assert result.candidate_oof_report is None
     assert "no threshold" in (result.failure_reason or "")
+
+
+def test_ship_override_calibration_selects_two_thresholds_and_counts_oof_once() -> None:
+    baseline, candidate, truth, image_to_group = _synthetic_ship_override_inputs()
+
+    result = calibrate_ship_override_thresholds(
+        baseline,
+        candidate,
+        truth,
+        image_to_group,
+        TAXONOMY,
+        folds=3,
+        thresholds=[0.25, 0.35, 0.45],
+    )
+
+    assert result.passed
+    assert [fold.selected_ship_threshold for fold in result.fold_results] == [0.45] * 3
+    assert [fold.selected_general_threshold for fold in result.fold_results] == [0.35] * 3
+    assert result.final_ship_threshold == 0.45
+    assert result.final_general_threshold == 0.35
+    assert result.ship_threshold_range == 0.0
+    assert result.general_threshold_range == 0.0
+    assert result.worst_fold_ship_fdr == 0.0
+    assert result.candidate_oof_report is not None
+    assert result.candidate_oof_report.overall_class_agnostic.tp == len(truth)
+    assert len(result.oof_predictions) == len(truth)
+
+
+def test_ship_override_artifacts_map_ship_and_general_classes(tmp_path: Path) -> None:
+    baseline, candidate, truth, image_to_group = _synthetic_ship_override_inputs()
+    result = calibrate_ship_override_thresholds(
+        baseline,
+        candidate,
+        truth,
+        image_to_group,
+        TAXONOMY,
+        folds=3,
+        thresholds=[0.25, 0.35, 0.45],
+    )
+
+    paths = write_ship_override_calibration_artifacts(result, tmp_path / "ship-override", TAXONOMY)
+
+    thresholds = yaml.safe_load(paths["thresholds"].read_text(encoding="utf-8"))
+    assert thresholds["strategy"] == "ship-override"
+    assert {thresholds["class_thresholds"][class_id] for class_id in range(4)} == {0.45}
+    assert {thresholds["class_thresholds"][class_id] for class_id in range(4, 25)} == {0.35}
+
+
+def test_failed_ship_override_does_not_publish_thresholds_or_config(tmp_path: Path) -> None:
+    baseline, candidate, truth, image_to_group = _synthetic_ship_override_inputs()
+    passing = calibrate_ship_override_thresholds(
+        baseline,
+        candidate,
+        truth,
+        image_to_group,
+        TAXONOMY,
+        folds=3,
+        thresholds=[0.25, 0.35, 0.45],
+    )
+    failed = replace(passing, status="failed", failure_reason="stopping gate failed")
+    output = tmp_path / "failed"
+
+    paths = write_ship_override_calibration_artifacts(failed, output, TAXONOMY)
+
+    assert "thresholds" not in paths
+    assert not (output / "calibrated-thresholds.yaml").exists()
+    with pytest.raises(ValueError, match="failed calibration"):
+        write_ship_override_calibration_artifacts(
+            failed,
+            tmp_path / "other",
+            TAXONOMY,
+            base_config=tmp_path / "base.yaml",
+            calibrated_config=tmp_path / "calibrated.yaml",
+        )
 
 
 def test_load_image_group_mapping_uses_coco_file_stems(tmp_path: Path) -> None:

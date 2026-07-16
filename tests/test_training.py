@@ -328,6 +328,52 @@ def test_train_model_uses_gcd_trainer_for_selected_mode(
 
 
 @patch("xh_detect.training.YOLO")
+def test_train_model_passes_gcd_assignment_weight(yolo_class: Mock) -> None:
+    from xh_detect.models.gcd import GCDDetectionTrainer
+
+    train_model(
+        "dataset.yaml",
+        "yolo26s.pt",
+        1,
+        1024,
+        "0",
+        gcd_loss=True,
+        gcd_assignment=True,
+        gcd_assignment_weight=0.25,
+    )
+
+    assert yolo_class.return_value.train.call_args.kwargs["trainer"] is GCDDetectionTrainer
+    assert GCDDetectionTrainer.gcd_config.assignment_weight == 0.25
+
+
+@pytest.mark.parametrize("weight", [-0.1, 1.1, float("nan"), True])
+def test_train_model_rejects_invalid_gcd_assignment_weight(weight: object) -> None:
+    with pytest.raises(ValueError, match="gcd_assignment_weight"):
+        train_model(
+            "dataset.yaml",
+            "yolo26s.pt",
+            1,
+            1024,
+            "0",
+            gcd_assignment=True,
+            gcd_assignment_weight=weight,  # type: ignore[arg-type]
+        )
+
+
+def test_train_model_requires_gcd_assignment_for_nondefault_weight() -> None:
+    with pytest.raises(ValueError, match="requires gcd_assignment"):
+        train_model(
+            "dataset.yaml",
+            "yolo26s.pt",
+            1,
+            1024,
+            "0",
+            gcd_loss=True,
+            gcd_assignment_weight=0.5,
+        )
+
+
+@patch("xh_detect.training.YOLO")
 def test_train_model_rejects_density_and_gcd_combination(yolo_class: Mock) -> None:
     with pytest.raises(ValueError, match="cannot be combined"):
         train_model(

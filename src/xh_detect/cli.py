@@ -17,9 +17,11 @@ from xh_detect import __version__
 from xh_detect.benchmark import summarize_durations
 from xh_detect.calibration import (
     DEFAULT_CALIBRATION_GRID_TEXT,
+    calibrate_ship_override_thresholds,
     calibrate_thresholds,
     load_image_group_mapping,
     write_calibration_artifacts,
+    write_ship_override_calibration_artifacts,
 )
 from xh_detect.compare import compare_experiments
 from xh_detect.competition import (
@@ -668,6 +670,7 @@ def train(
     density_threshold: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.25,
     gcd_loss: Annotated[bool, typer.Option()] = False,
     gcd_assignment: Annotated[bool, typer.Option()] = False,
+    gcd_assignment_weight: Annotated[float, typer.Option(min=0.0, max=1.0)] = 1.0,
     optimizer: Annotated[str | None, typer.Option()] = None,
     learning_rate: Annotated[float | None, typer.Option(min=0.0000001)] = None,
     freeze: Annotated[int | None, typer.Option(min=0)] = None,
@@ -677,6 +680,8 @@ def train(
 ) -> None:
     if density_assignment and (gcd_loss or gcd_assignment):
         raise typer.BadParameter("density assignment cannot be combined with GCD training")
+    if not gcd_assignment and gcd_assignment_weight != 1.0:
+        raise typer.BadParameter("--gcd-assignment-weight requires --gcd-assignment")
 
     density_options: dict[str, object] = {}
     if density_assignment:
@@ -691,6 +696,8 @@ def train(
             "gcd_loss": gcd_loss,
             "gcd_assignment": gcd_assignment,
         }
+        if gcd_assignment_weight != 1.0:
+            gcd_options["gcd_assignment_weight"] = gcd_assignment_weight
     tuning_options: dict[str, object] = {}
     if optimizer is not None:
         tuning_options["optimizer"] = optimizer
@@ -1250,6 +1257,7 @@ def calibrate_thresholds_command(
     ground_truth_json: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
     source_groups_json: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
     output_dir: Annotated[Path, typer.Option()],
+    strategy: Annotated[str, typer.Option()] = "global",
     taxonomy: Annotated[str, typer.Option()] = "xh25",
     folds: Annotated[int, typer.Option(min=2)] = 5,
     seed: Annotated[int, typer.Option(min=0)] = 42,
@@ -1257,45 +1265,88 @@ def calibrate_thresholds_command(
     raw_threshold: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.25,
     recall_floor_delta: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.005,
     fdr_cap_delta: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.005,
+    ship_recall_floor: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.80,
+    ship_calibration_fdr_cap: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.17,
     tie_epsilon: Annotated[float, typer.Option(min=0.0)] = 0.0001,
     acceptance_recall: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.953772,
     acceptance_fdr: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.045037,
     acceptance_ship_recall: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.80,
     acceptance_ship_fdr: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.18,
+    acceptance_worst_fold_ship_fdr: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.25,
     acceptance_threshold_range: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.05,
     base_config: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
     calibrated_config: Annotated[Path | None, typer.Option()] = None,
 ) -> None:
     try:
+        if strategy not in {"global", "ship-override"}:
+            raise ValueError("strategy must be 'global' or 'ship-override'")
         taxonomy_object = get_taxonomy(taxonomy)
         threshold_grid = parse_threshold_grid(thresholds)
         mapping = load_image_group_mapping(ground_truth_json, source_groups_json)
-        result = calibrate_thresholds(
-            load_coco_predictions(baseline_predictions_json, taxonomy=taxonomy_object),
-            load_coco_predictions(candidate_predictions_json, taxonomy=taxonomy_object),
-            load_coco_ground_truth(ground_truth_json, taxonomy=taxonomy_object),
-            mapping.image_to_group,
-            taxonomy_object,
-            folds=folds,
-            seed=seed,
-            thresholds=threshold_grid,
-            raw_threshold=raw_threshold,
-            recall_floor_delta=recall_floor_delta,
-            fdr_cap_delta=fdr_cap_delta,
-            tie_epsilon=tie_epsilon,
-            acceptance_recall=acceptance_recall,
-            acceptance_fdr=acceptance_fdr,
-            acceptance_ship_recall=acceptance_ship_recall,
-            acceptance_ship_fdr=acceptance_ship_fdr,
-            acceptance_threshold_range=acceptance_threshold_range,
+        baseline_predictions = load_coco_predictions(
+            baseline_predictions_json, taxonomy=taxonomy_object
         )
-        paths = write_calibration_artifacts(
-            result,
-            output_dir,
-            taxonomy_object,
-            base_config=base_config,
-            calibrated_config=calibrated_config,
+        candidate_predictions = load_coco_predictions(
+            candidate_predictions_json, taxonomy=taxonomy_object
         )
+        ground_truth = load_coco_ground_truth(ground_truth_json, taxonomy=taxonomy_object)
+        if strategy == "ship-override":
+            result = calibrate_ship_override_thresholds(
+                baseline_predictions,
+                candidate_predictions,
+                ground_truth,
+                mapping.image_to_group,
+                taxonomy_object,
+                folds=folds,
+                seed=seed,
+                thresholds=threshold_grid,
+                raw_threshold=raw_threshold,
+                recall_floor_delta=recall_floor_delta,
+                fdr_cap_delta=fdr_cap_delta,
+                ship_recall_floor=ship_recall_floor,
+                ship_fdr_cap=ship_calibration_fdr_cap,
+                tie_epsilon=tie_epsilon,
+                acceptance_recall=acceptance_recall,
+                acceptance_fdr=acceptance_fdr,
+                acceptance_ship_recall=acceptance_ship_recall,
+                acceptance_ship_fdr=acceptance_ship_fdr,
+                acceptance_worst_fold_ship_fdr=acceptance_worst_fold_ship_fdr,
+                acceptance_threshold_range=acceptance_threshold_range,
+            )
+            paths = write_ship_override_calibration_artifacts(
+                result,
+                output_dir,
+                taxonomy_object,
+                base_config=base_config,
+                calibrated_config=calibrated_config,
+            )
+        else:
+            result = calibrate_thresholds(
+                baseline_predictions,
+                candidate_predictions,
+                ground_truth,
+                mapping.image_to_group,
+                taxonomy_object,
+                folds=folds,
+                seed=seed,
+                thresholds=threshold_grid,
+                raw_threshold=raw_threshold,
+                recall_floor_delta=recall_floor_delta,
+                fdr_cap_delta=fdr_cap_delta,
+                tie_epsilon=tie_epsilon,
+                acceptance_recall=acceptance_recall,
+                acceptance_fdr=acceptance_fdr,
+                acceptance_ship_recall=acceptance_ship_recall,
+                acceptance_ship_fdr=acceptance_ship_fdr,
+                acceptance_threshold_range=acceptance_threshold_range,
+            )
+            paths = write_calibration_artifacts(
+                result,
+                output_dir,
+                taxonomy_object,
+                base_config=base_config,
+                calibrated_config=calibrated_config,
+            )
     except (TypeError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
     typer.echo(str(paths["summary"]))

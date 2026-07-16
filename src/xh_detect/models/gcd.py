@@ -16,6 +16,7 @@ from ultralytics.utils.tal import TaskAlignedAssigner
 class GCDTrainingConfig:
     use_loss: bool = False
     use_assignment: bool = False
+    assignment_weight: float = 1.0
     eps: float = 1e-7
     root_eps: float = 1e-12
 
@@ -24,6 +25,13 @@ class GCDTrainingConfig:
             raise TypeError("use_loss must be a boolean")
         if not isinstance(self.use_assignment, bool):
             raise TypeError("use_assignment must be a boolean")
+        if (
+            isinstance(self.assignment_weight, bool)
+            or not isinstance(self.assignment_weight, (int, float))
+            or not math.isfinite(self.assignment_weight)
+            or not 0.0 <= self.assignment_weight <= 1.0
+        ):
+            raise ValueError("assignment_weight must be finite and in [0, 1]")
         if not math.isfinite(self.eps) or self.eps <= 0.0:
             raise ValueError("eps must be positive and finite")
         if not math.isfinite(self.root_eps) or self.root_eps <= 0.0:
@@ -81,11 +89,20 @@ class GCDTaskAlignedAssigner(TaskAlignedAssigner):
     def __init__(
         self,
         *args: object,
+        assignment_weight: float = 1.0,
         gcd_eps: float = 1e-7,
         gcd_root_eps: float = 1e-12,
         **kwargs: object,
     ) -> None:
         super().__init__(*args, **kwargs)
+        if (
+            isinstance(assignment_weight, bool)
+            or not isinstance(assignment_weight, (int, float))
+            or not math.isfinite(assignment_weight)
+            or not 0.0 <= assignment_weight <= 1.0
+        ):
+            raise ValueError("assignment_weight must be finite and in [0, 1]")
+        self.assignment_weight = float(assignment_weight)
         self.gcd_eps = gcd_eps
         self.gcd_root_eps = gcd_root_eps
 
@@ -94,12 +111,18 @@ class GCDTaskAlignedAssigner(TaskAlignedAssigner):
         gt_bboxes: torch.Tensor,
         pd_bboxes: torch.Tensor,
     ) -> torch.Tensor:
-        return gcd_similarity(
+        gcd = gcd_similarity(
             gt_bboxes,
             pd_bboxes,
             eps=self.gcd_eps,
             root_eps=self.gcd_root_eps,
         )
+        if self.assignment_weight == 1.0:
+            return gcd
+        ciou = super().iou_calculation(gt_bboxes, pd_bboxes)
+        if self.assignment_weight == 0.0:
+            return ciou
+        return (1.0 - self.assignment_weight) * ciou + self.assignment_weight * gcd
 
 
 class GCDBboxLoss(BboxLoss):
@@ -166,6 +189,7 @@ class GCDDetectionLoss(v8DetectionLoss):
                 beta=6.0,
                 stride=self.stride.tolist(),
                 topk2=tal_topk2,
+                assignment_weight=config.assignment_weight,
                 gcd_eps=config.eps,
                 gcd_root_eps=config.root_eps,
             )
