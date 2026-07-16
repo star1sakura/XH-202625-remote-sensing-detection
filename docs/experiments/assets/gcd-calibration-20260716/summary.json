@@ -1,0 +1,140 @@
+{
+  "acceptance": {
+    "oof_fdr": {
+      "limit": 0.045037,
+      "operator": "<=",
+      "passed": true,
+      "value": 0.036555142503097895
+    },
+    "oof_recall": {
+      "limit": 0.953772,
+      "operator": ">=",
+      "passed": true,
+      "value": 0.9640421574705518
+    },
+    "ship_fdr": {
+      "limit": 0.18,
+      "operator": "<=",
+      "passed": false,
+      "value": 0.18292682926829268
+    },
+    "ship_recall": {
+      "limit": 0.8,
+      "operator": ">=",
+      "passed": true,
+      "value": 0.8333333333333334
+    },
+    "threshold_range": {
+      "limit": 0.05,
+      "operator": "<=",
+      "passed": false,
+      "value": 0.07500000000000001
+    }
+  },
+  "baseline_oof": {
+    "by_coarse_class": {
+      "aircraft": {
+        "fdr": 0.021284271284271284,
+        "fn": 33,
+        "fp": 59,
+        "recall": 0.9879825200291333,
+        "tp": 2713
+      },
+      "ship": {
+        "fdr": 0.15485564304461943,
+        "fn": 80,
+        "fp": 59,
+        "recall": 0.8009950248756219,
+        "tp": 322
+      },
+      "vehicle": {
+        "fdr": 0.15942028985507245,
+        "fn": 20,
+        "fp": 11,
+        "recall": 0.7435897435897436,
+        "tp": 58
+      }
+    },
+    "overall_class_agnostic": {
+      "fdr": 0.04003724394785847,
+      "fn": 133,
+      "fp": 129,
+      "recall": 0.9587724736515809,
+      "tp": 3093
+    }
+  },
+  "code": {
+    "calibration": "b86613a7207c55c92e91eeaee1c71e0b3bc5e52e",
+    "seed42_training": "5421bdaaddebec61f35823d7743eb7abc262ee54"
+  },
+  "experiment": "gcd-both-grouped-5fold-calibration-seed42",
+  "failure_reason": "acceptance checks failed: ship_fdr, threshold_range",
+  "gcd_both_oof": {
+    "by_coarse_class": {
+      "aircraft": {
+        "fdr": 0.013803123864874683,
+        "fn": 31,
+        "fp": 38,
+        "recall": 0.9887108521485798,
+        "tp": 2715
+      },
+      "ship": {
+        "fdr": 0.18292682926829268,
+        "fn": 67,
+        "fp": 75,
+        "recall": 0.8333333333333334,
+        "tp": 335
+      },
+      "vehicle": {
+        "fdr": 0.07692307692307693,
+        "fn": 18,
+        "fp": 5,
+        "recall": 0.7692307692307693,
+        "tp": 60
+      }
+    },
+    "overall_class_agnostic": {
+      "fdr": 0.036555142503097895,
+      "fn": 116,
+      "fp": 118,
+      "recall": 0.9640421574705518,
+      "tp": 3110
+    }
+  },
+  "hashes": {
+    "base_model": "646f8bc3fe0a656803d95c294f7852321748cb29d13466a1af8862e2db384a1b",
+    "baseline_predictions": "10d100660a7a309f1f0f19f8e6c49197348b4871c4d4570094e85d56d521627d",
+    "dataset_yaml": "6bf4400ec4ab759dbd041d3fa128041205af7ac4868360daf4f5f696763f7b6b",
+    "gcd_both_predictions": "eaf2058e2d4590bed238d3518c5a53f99e7ac230ed02c96da08135b4c0f7410a",
+    "source_groups": "ab5ab5fa22f9eb3275f7c23eb111cf83d7db8d47748ba4da14cd32a4a1d7a3ee",
+    "train_manifest": "8fc0f7144cb3d922d9a943d531b9172777a52d25fb8e8313e513dfed323f20fe",
+    "val_ground_truth": "c66e6fc7b32d77b20e4fdc753acb5a72aa36ddddb0eafd4b09dc0dc7f7e86f33",
+    "val_manifest": "2ba3156d492ef108a89e55703f341d93a959d17512ac77e72cbd98ab65fe395d"
+  },
+  "median_threshold": 0.425,
+  "next_stage": {
+    "reason": "five-fold calibration acceptance failed",
+    "seed_43_44_training": "not_run"
+  },
+  "parameters": {
+    "fdr_cap_delta": 0.005,
+    "folds": 5,
+    "grid_start": 0.25,
+    "grid_step": 0.025,
+    "grid_stop": 0.6,
+    "raw_threshold": 0.25,
+    "recall_floor_delta": 0.005,
+    "seed": 42,
+    "tie_epsilon": 0.0001
+  },
+  "recommendation": "retain_baseline",
+  "selected_thresholds": [
+    0.425,
+    0.425,
+    0.375,
+    0.45,
+    0.425
+  ],
+  "status": "failed",
+  "threshold_range": 0.07500000000000001
+}
