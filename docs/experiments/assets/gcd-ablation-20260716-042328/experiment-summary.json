@@ -1,0 +1,148 @@
+{
+  "schema_version": 1,
+  "experiment_group": "gcd-ablation-20260716-042328",
+  "git_commit": "5421bdaaddebec61f35823d7743eb7abc262ee54",
+  "recommended_variant": "baseline",
+  "gates": {
+    "baseline": {
+      "map50_95": 0.770181210442071,
+      "map50_95_delta": 0.0,
+      "recall_delta": 0.0,
+      "fdr_delta": 0.0,
+      "recall_gate": true,
+      "fdr_gate": true,
+      "eligible": true
+    },
+    "gcd-loss": {
+      "map50_95": 0.7694888752539094,
+      "map50_95_delta": -0.0006923351881615858,
+      "recall_delta": 0.008059516429014257,
+      "fdr_delta": 0.002333035450360746,
+      "recall_gate": true,
+      "fdr_gate": true,
+      "eligible": true
+    },
+    "gcd-assigner": {
+      "map50_95": 0.7651873833568259,
+      "map50_95_delta": -0.004993827085245095,
+      "recall_delta": 0.004959702417854928,
+      "fdr_delta": 0.007158588108531351,
+      "recall_gate": true,
+      "fdr_gate": false,
+      "eligible": false
+    },
+    "gcd-both": {
+      "map50_95": 0.7744538546697202,
+      "map50_95_delta": 0.004272644227649169,
+      "recall_delta": 0.012709237445753252,
+      "fdr_delta": 0.009401639885929819,
+      "recall_gate": true,
+      "fdr_gate": false,
+      "eligible": false
+    }
+  },
+  "training": {
+    "baseline": {
+      "label": "Baseline",
+      "run_name": "gcd-ablation-20260716-042328-baseline",
+      "epochs": 80,
+      "best_epoch": 60,
+      "training_best": {
+        "precision": 0.93907,
+        "recall": 0.92991,
+        "map50": 0.95821,
+        "map50_95": 0.77032
+      },
+      "training_final": {
+        "precision": 0.94071,
+        "recall": 0.93709,
+        "map50": 0.95458,
+        "map50_95": 0.76427
+      },
+      "elapsed_seconds": 8486.34,
+      "best_sha256": "48f4701a4bcf1eb3887b73a2e8cdcaf89c98a59ba68c509818c1233b85755119",
+      "best_size_bytes": 20425925,
+      "last_sha256": "570ebf8716a1e6ec06f53a62420596915e45a36d93f877eb9d400f9726b9bb7f",
+      "started_at": "2026-07-16T04:27:49+08:00",
+      "finished_at": "2026-07-16T06:49:30+08:00"
+    },
+    "gcd-loss": {
+      "label": "GCD-Loss",
+      "run_name": "gcd-ablation-20260716-042328-gcd-loss",
+      "epochs": 80,
+      "best_epoch": 69,
+      "training_best": {
+        "precision": 0.91987,
+        "recall": 0.9422,
+        "map50": 0.96418,
+        "map50_95": 0.76896
+      },
+      "training_final": {
+        "precision": 0.94348,
+        "recall": 0.92656,
+        "map50": 0.95232,
+        "map50_95": 0.75879
+      },
+      "elapsed_seconds": 8522.68,
+      "best_sha256": "22da5a6c89ba2af4f13d8ffc9460e3d74ccbdec8d970c02c142fb944e206849c",
+      "best_size_bytes": 20426117,
+      "last_sha256": "fa7030e8cefc1b3c5f2930a1e9b5b1069cde2f2eb3a6ac3a835e96093e695db3",
+      "started_at": "2026-07-16T06:49:30+08:00",
+      "finished_at": "2026-07-16T09:11:48+08:00"
+    },
+    "gcd-assigner": {
+      "label": "GCD-Assigner",
+      "run_name": "gcd-ablation-20260716-042328-gcd-assigner",
+      "epochs": 80,
+      "best_epoch": 70,
+      "training_best": {
+        "precision": 0.94943,
+        "recall": 0.92578,
+        "map50": 0.95774,
+        "map50_95": 0.76549
+      },
+      "training_final": {
+        "precision": 0.94066,
+        "recall": 0.9334,
+        "map50": 0.95555,
+        "map50_95": 0.75658
+      },
+      "elapsed_seconds": 8478.88,
+      "best_sha256": "a02cdb90b0ce62979cab15e2e96d841826680993f2d983ba929a8d30e54bf0fc",
+      "best_size_bytes": 20426117,
+      "last_sha256": "8b50482e52118a5df3911b4b8cb79243371ea61ba811fea5af59391fc1b47cb8",
+      "started_at": "2026-07-16T09:11:48+08:00",
+      "finished_at": "2026-07-16T11:33:22+08:00"
+    },
+    "gcd-both": {
+      "label": "GCD-Both",
+      "run_name": "gcd-ablation-20260716-042328-gcd-both",
+      "epochs": 80,
+      "best_epoch": 63,
+      "training_best": {
+        "precision": 0.93541,
+        "recall": 0.95099,
+        "map50": 0.9609,
+        "map50_95": 0.77475
+      },
+      "training_final": {
+        "precision": 0.95204,
+        "recall": 0.93545,
+        "map50": 0.96164,
+        "map50_95": 0.77176
+      },
+      "elapsed_seconds": 8526.14,
+      "best_sha256": "ba6a680260736dc6d91524db553b00c52cbbec9c879eefcba119eecfe2c28b26",
+      "best_size_bytes": 20426117,
+      "last_sha256": "220981bf08230a218962b7580403b71ce170e3371338f8df5e214ad8fa680f24",
+      "started_at": "2026-07-16T11:33:22+08:00",
+      "finished_at": "2026-07-16T13:55:43+08:00"
+    }
+  },
+  "dataset_hashes": {
+    "dataset_yaml": "6bf4400ec4ab759dbd041d3fa128041205af7ac4868360daf4f5f696763f7b6b",
+    "train_manifest": "8fc0f7144cb3d922d9a943d531b9172777a52d25fb8e8313e513dfed323f20fe",
+    "val_manifest": "2ba3156d492ef108a89e55703f341d93a959d17512ac77e72cbd98ab65fe395d"
+  },
+  "base_model_sha256": "646f8bc3fe0a656803d95c294f7852321748cb29d13466a1af8862e2db384a1b"
+}
