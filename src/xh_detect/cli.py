@@ -15,6 +15,12 @@ import ultralytics
 
 from xh_detect import __version__
 from xh_detect.benchmark import summarize_durations
+from xh_detect.calibration import (
+    DEFAULT_CALIBRATION_GRID_TEXT,
+    calibrate_thresholds,
+    load_image_group_mapping,
+    write_calibration_artifacts,
+)
 from xh_detect.compare import compare_experiments
 from xh_detect.competition import (
     load_evaluation_report,
@@ -656,6 +662,7 @@ def train(
     project: Annotated[str, typer.Option()] = "runs/train",
     name: Annotated[str, typer.Option()] = "xh25-baseline",
     resume: Annotated[bool, typer.Option()] = False,
+    seed: Annotated[int, typer.Option(min=0)] = 42,
     density_assignment: Annotated[bool, typer.Option()] = False,
     density_constant: Annotated[float, typer.Option(min=0.001)] = 12.0,
     density_threshold: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.25,
@@ -709,6 +716,7 @@ def train(
         project=project,
         name=name,
         resume=resume,
+        seed=seed,
         pretrained=pretrained,
         **density_options,
         **gcd_options,
@@ -1233,6 +1241,66 @@ def optimize_thresholds_command(
     except (TypeError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
     typer.echo(str(output_dir / "report.json"))
+
+
+@app.command("calibrate-thresholds")
+def calibrate_thresholds_command(
+    baseline_predictions_json: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    candidate_predictions_json: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    ground_truth_json: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    source_groups_json: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output_dir: Annotated[Path, typer.Option()],
+    taxonomy: Annotated[str, typer.Option()] = "xh25",
+    folds: Annotated[int, typer.Option(min=2)] = 5,
+    seed: Annotated[int, typer.Option(min=0)] = 42,
+    thresholds: Annotated[str, typer.Option()] = DEFAULT_CALIBRATION_GRID_TEXT,
+    raw_threshold: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.25,
+    recall_floor_delta: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.005,
+    fdr_cap_delta: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.005,
+    tie_epsilon: Annotated[float, typer.Option(min=0.0)] = 0.0001,
+    acceptance_recall: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.953772,
+    acceptance_fdr: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.045037,
+    acceptance_ship_recall: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.80,
+    acceptance_ship_fdr: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.18,
+    acceptance_threshold_range: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.05,
+    base_config: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
+    calibrated_config: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    try:
+        taxonomy_object = get_taxonomy(taxonomy)
+        threshold_grid = parse_threshold_grid(thresholds)
+        mapping = load_image_group_mapping(ground_truth_json, source_groups_json)
+        result = calibrate_thresholds(
+            load_coco_predictions(baseline_predictions_json, taxonomy=taxonomy_object),
+            load_coco_predictions(candidate_predictions_json, taxonomy=taxonomy_object),
+            load_coco_ground_truth(ground_truth_json, taxonomy=taxonomy_object),
+            mapping.image_to_group,
+            taxonomy_object,
+            folds=folds,
+            seed=seed,
+            thresholds=threshold_grid,
+            raw_threshold=raw_threshold,
+            recall_floor_delta=recall_floor_delta,
+            fdr_cap_delta=fdr_cap_delta,
+            tie_epsilon=tie_epsilon,
+            acceptance_recall=acceptance_recall,
+            acceptance_fdr=acceptance_fdr,
+            acceptance_ship_recall=acceptance_ship_recall,
+            acceptance_ship_fdr=acceptance_ship_fdr,
+            acceptance_threshold_range=acceptance_threshold_range,
+        )
+        paths = write_calibration_artifacts(
+            result,
+            output_dir,
+            taxonomy_object,
+            base_config=base_config,
+            calibrated_config=calibrated_config,
+        )
+    except (TypeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(str(paths["summary"]))
+    if not result.passed:
+        raise typer.Exit(code=2)
 
 
 @app.command("optimize-ranking-thresholds")

@@ -625,6 +625,7 @@ def test_train_command_calls_wrapper(train_model: Mock, tmp_path: Path) -> None:
         project="runs/train",
         name="xh25-baseline",
         resume=False,
+        seed=42,
         pretrained=None,
     )
 
@@ -660,6 +661,8 @@ def test_train_command_forwards_reproducible_options(
             "runs/obb",
             "--name",
             "legacy-obb",
+            "--seed",
+            "43",
             "--resume",
         ],
     )
@@ -677,6 +680,7 @@ def test_train_command_forwards_reproducible_options(
         project="runs/obb",
         name="legacy-obb",
         resume=True,
+        seed=43,
         pretrained=None,
     )
 
@@ -717,6 +721,7 @@ def test_train_command_forwards_pretrained_option(
         project="runs/train",
         name="xh25-baseline",
         resume=False,
+        seed=42,
         pretrained="yolo26s.pt",
     )
 
@@ -789,6 +794,7 @@ def test_train_command_forwards_density_assignment_options(
         project="runs/train",
         name="xh25-baseline",
         resume=False,
+        seed=42,
         pretrained=None,
         density_assignment=True,
         density_constant=16.0,
@@ -1714,6 +1720,7 @@ def test_train_command_forwards_gcd_options(
         project="runs/train",
         name="xh25-baseline",
         resume=False,
+        seed=42,
         pretrained=None,
         gcd_loss=True,
         gcd_assignment=True,
@@ -1742,3 +1749,89 @@ def test_train_command_rejects_density_and_gcd(
     assert result.exit_code != 0
     assert "cannot be combined" in result.output
     train_model.assert_not_called()
+
+
+def test_calibrate_thresholds_command_writes_passing_grouped_oof_artifacts(
+    tmp_path: Path,
+) -> None:
+    baseline_path = tmp_path / "baseline.json"
+    candidate_path = tmp_path / "candidate.json"
+    truth_path = tmp_path / "truth.json"
+    groups_path = tmp_path / "source-groups.json"
+    output = tmp_path / "calibration"
+    images = [
+        {"id": image_id, "file_name": f"images/val/source-{image_id}_crop1.jpg"}
+        for image_id in range(1, 7)
+    ]
+    annotations = [
+        {"image_id": image_id, "category_id": 0, "bbox": [0, 0, 10, 10]} for image_id in range(1, 7)
+    ]
+    baseline = [
+        {"image_id": image_id, "category_id": 0, "bbox": [0, 0, 10, 10], "score": 0.9}
+        for image_id in range(1, 7)
+    ]
+    candidate = [
+        prediction
+        for image_id in range(1, 7)
+        for prediction in (
+            {
+                "image_id": image_id,
+                "category_id": 0,
+                "bbox": [0, 0, 10, 10],
+                "score": 0.9,
+            },
+            {
+                "image_id": image_id,
+                "category_id": 0,
+                "bbox": [100, 100, 10, 10],
+                "score": 0.4,
+            },
+        )
+    ]
+    truth_path.write_text(
+        json.dumps({"images": images, "annotations": annotations}), encoding="utf-8"
+    )
+    baseline_path.write_text(json.dumps(baseline), encoding="utf-8")
+    candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
+    groups_path.write_text(
+        json.dumps(
+            {
+                f"source-{image_id}_crop1": {
+                    "group": f"source-{image_id}",
+                    "split": "val",
+                }
+                for image_id in range(1, 7)
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "calibrate-thresholds",
+            "--baseline-predictions-json",
+            str(baseline_path),
+            "--candidate-predictions-json",
+            str(candidate_path),
+            "--ground-truth-json",
+            str(truth_path),
+            "--source-groups-json",
+            str(groups_path),
+            "--output-dir",
+            str(output),
+            "--folds",
+            "3",
+            "--thresholds",
+            "0.25,0.45",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.strip() == str(output / "calibration-summary.json")
+    summary = json.loads((output / "calibration-summary.json").read_text(encoding="utf-8"))
+    assert summary["status"] == "passed"
+    assert summary["selected_thresholds"] == [0.45, 0.45, 0.45]
+    assert (output / "fold-assignments.json").is_file()
+    assert (output / "oof-report.json").is_file()
+    assert (output / "calibrated-thresholds.yaml").is_file()

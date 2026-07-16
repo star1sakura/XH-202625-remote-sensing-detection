@@ -61,6 +61,7 @@ def train_model(
     project: str = "runs/train",
     name: str = "xh25-baseline",
     resume: bool = False,
+    seed: int = 42,
     pretrained: str | None = None,
     density_assignment: bool = False,
     density_constant: float = 12.0,
@@ -85,6 +86,7 @@ def train_model(
     project = _project_path(project, "project")
     name = _non_empty(name, "name")
     resume = _bool(resume, "resume")
+    seed = _non_negative_int(seed, "seed")
     density_assignment = _bool(density_assignment, "density_assignment")
     gcd_loss = _bool(gcd_loss, "gcd_loss")
     gcd_assignment = _bool(gcd_assignment, "gcd_assignment")
@@ -127,7 +129,7 @@ def train_model(
         "batch": batch,
         "workers": workers,
         "amp": amp,
-        "seed": 42,
+        "seed": seed,
         "deterministic": True,
         "project": project,
         "name": name,

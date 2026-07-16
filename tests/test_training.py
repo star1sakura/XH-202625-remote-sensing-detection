@@ -34,6 +34,34 @@ def test_train_model_passes_reproducible_arguments(yolo_class: Mock) -> None:
 
 
 @patch("xh_detect.training.YOLO")
+def test_train_model_forwards_custom_seed(yolo_class: Mock) -> None:
+    train_model(
+        "dataset.yaml",
+        "yolo26s.pt",
+        epochs=1,
+        image_size=1024,
+        device="0",
+        seed=44,
+    )
+
+    assert yolo_class.return_value.train.call_args.kwargs["seed"] == 44
+    assert yolo_class.return_value.train.call_args.kwargs["deterministic"] is True
+
+
+@pytest.mark.parametrize("seed", [-1, True])
+def test_train_model_rejects_invalid_seed(seed: object) -> None:
+    with pytest.raises((TypeError, ValueError), match="seed must be a non-negative integer"):
+        train_model(
+            "dataset.yaml",
+            "yolo26s.pt",
+            epochs=1,
+            image_size=1024,
+            device="0",
+            seed=seed,  # type: ignore[arg-type]
+        )
+
+
+@patch("xh_detect.training.YOLO")
 def test_train_model_resolves_relative_project_against_cwd(
     yolo_class: Mock,
     monkeypatch: pytest.MonkeyPatch,
