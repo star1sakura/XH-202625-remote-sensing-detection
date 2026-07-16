@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -260,3 +261,32 @@ def test_write_artifacts_outputs_uniform_thresholds_and_only_changes_config_thre
     assert summary["status"] == "passed"
     oof = json.loads(paths["oof_predictions"].read_text(encoding="utf-8"))
     assert len(oof) == len(truth)
+
+
+def test_write_artifacts_does_not_publish_thresholds_for_failed_acceptance(
+    tmp_path: Path,
+) -> None:
+    baseline, candidate, truth, image_to_group = _synthetic_inputs()
+    passing = calibrate_thresholds(
+        baseline,
+        candidate,
+        truth,
+        image_to_group,
+        TAXONOMY,
+        folds=3,
+        thresholds=[0.25, 0.45],
+    )
+    failed = replace(passing, status="failed", failure_reason="acceptance failed")
+
+    paths = write_calibration_artifacts(failed, tmp_path / "artifacts", TAXONOMY)
+
+    assert "thresholds" not in paths
+    assert not (tmp_path / "artifacts" / "calibrated-thresholds.yaml").exists()
+    with pytest.raises(ValueError, match="failed calibration"):
+        write_calibration_artifacts(
+            failed,
+            tmp_path / "other-artifacts",
+            TAXONOMY,
+            base_config=tmp_path / "base.yaml",
+            calibrated_config=tmp_path / "calibrated.yaml",
+        )

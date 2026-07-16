@@ -589,7 +589,9 @@ def write_calibration_artifacts(
         [_coco_detection(detection) for detection in result.oof_predictions],
     )
 
-    if result.final_threshold is not None:
+    if result.passed:
+        if result.final_threshold is None:
+            raise ValueError("passed calibration must contain a final threshold")
         threshold_path = destination / "calibrated-thresholds.yaml"
         threshold_payload = {
             "global_threshold": result.final_threshold,
@@ -612,5 +614,5 @@ def write_calibration_artifacts(
             _write_yaml(config_path, payload)
             paths["config"] = config_path
     elif base_config is not None or calibrated_config is not None:
-        raise ValueError("cannot write a calibrated config without a selected threshold")
+        raise ValueError("cannot write a calibrated config for failed calibration")
     return paths
