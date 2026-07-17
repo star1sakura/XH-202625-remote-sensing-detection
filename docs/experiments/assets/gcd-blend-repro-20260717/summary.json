@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "experiment": "gcd-blend-repro-20260717",
+  "implementation_commit": "39903fd11a0740ac9cd51d75d6caf042b5b950ea",
+  "status": "not_accepted",
+  "recommendation": "baseline",
+  "reason": "No AP-qualified GCD candidate passed all grouped five-fold ship-override calibration gates.",
+  "fixed_training": {
+    "epochs": 80,
+    "seed": 42,
+    "imgsz": 1024,
+    "batch": 8,
+    "workers": 4,
+    "amp": false,
+    "deterministic": true
+  },
+  "hashes": {
+    "dataset_yaml": "6bf4400ec4ab759dbd041d3fa128041205af7ac4868360daf4f5f696763f7b6b",
+    "train_manifest": "8fc0f7144cb3d922d9a943d531b9172777a52d25fb8e8313e513dfed323f20fe",
+    "val_manifest": "2ba3156d492ef108a89e55703f341d93a959d17512ac77e72cbd98ab65fe395d",
+    "source_groups": "ab5ab5fa22f9eb3275f7c23eb111cf83d7db8d47748ba4da14cd32a4a1d7aa3ee",
+    "val_ground_truth": "c66e6fc7b32d77b20e4fdc753acb5a72aa36ddddb0eafd4b09dc0dc7f7e86f33",
+    "base_model": "646f8bc3fe0a656803d95c294f7852321748cb29d13466a1af8862e2db384a1b"
+  },
+  "seed42": [
+    {"variant":"baseline","assignment_weight":null,"map50_95":0.7701812104,"delta":0.0,"best_epoch":60,"overall_recall":0.9587724737,"overall_fdr":0.0400372439,"ship_recall":0.8009950249,"ship_fdr":0.1548556430,"ap_gate":"reference"},
+    {"variant":"gcd-loss","assignment_weight":0.0,"map50_95":0.7694888753,"delta":-0.0006923352,"best_epoch":69,"overall_recall":0.9668319901,"overall_fdr":0.0423702794,"ship_recall":0.8358208955,"ship_fdr":0.1764705882,"ap_gate":"failed"},
+    {"variant":"gcd-blend-s42-a025","assignment_weight":0.25,"map50_95":0.7733850003,"delta":0.0032037898,"best_epoch":64,"overall_recall":0.9668319901,"overall_fdr":0.0513990268,"ship_recall":0.8333333333,"ship_fdr":0.1829268293,"ap_gate":"passed","calibration":"failed"},
+    {"variant":"gcd-blend-s42-a050","assignment_weight":0.5,"map50_95":0.7700557929,"delta":-0.0001254176,"best_epoch":69,"overall_recall":0.9671419715,"overall_fdr":0.0461632528,"ship_recall":0.8383084577,"ship_fdr":0.1879518072,"ap_gate":"failed"},
+    {"variant":"gcd-blend-s42-a075","assignment_weight":0.75,"map50_95":0.7696891479,"delta":-0.0004920625,"best_epoch":79,"overall_recall":0.9624922505,"overall_fdr":0.0495867769,"ship_recall":0.8383084577,"ship_fdr":0.1995249406,"ap_gate":"failed"},
+    {"variant":"gcd-both","assignment_weight":1.0,"map50_95":0.7744538547,"delta":0.0042726442,"best_epoch":63,"overall_recall":0.9714817111,"overall_fdr":0.0494388838,"ship_recall":0.8582089552,"ship_fdr":0.2123287671,"ap_gate":"passed","calibration":"failed"}
+  ],
+  "calibration": {
+    "strategy": "ship-override",
+    "folds": 5,
+    "seed": 42,
+    "grid_min": 0.25,
+    "grid_max": 0.60,
+    "grid_step": 0.025,
+    "assignment_weight_0.25": {"status":"failed","failure_reason":"fold 0 has no ship/general threshold pair satisfying its gates","selected_ship_thresholds":[null,0.325,0.325,null,null],"selected_general_thresholds":[null,0.375,0.375,null,null]},
+    "assignment_weight_1.00": {"status":"failed","failure_reason":"fold 3 has no ship/general threshold pair satisfying its gates","selected_ship_thresholds":[0.6,0.6,0.35,null,0.6],"selected_general_thresholds":[0.425,0.425,0.4,null,0.425]}
+  },
+  "multiseed_confirmation": {
+    "status": "not_run_gate",
+    "seeds": [43,44],
+    "reason": "No seed 42 candidate passed grouped five-fold calibration."
+  },
+  "published_threshold_yaml": false,
+  "published_deployment_config": false
+}
