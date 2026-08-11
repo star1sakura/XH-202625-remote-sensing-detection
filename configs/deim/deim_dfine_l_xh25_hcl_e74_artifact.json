@@ -1,0 +1,39 @@
+{
+  "model": "DEIM-D-FINE-L/HCL",
+  "epoch": 74,
+  "training_config": "configs/deim/deim_dfine_l_xh25_1024_80e_hcl.yml",
+  "threshold_config": "configs/deim/deim_dfine_l_xh25_hcl_e74_competition7_thresholds.yaml",
+  "training": {
+    "seed": 42,
+    "image_size": 1024,
+    "batch_size": 8,
+    "epochs": 80,
+    "data_split": "official train/val",
+    "train_images": 3807,
+    "val_images": 674
+  },
+  "checkpoint": {
+    "filename": "checkpoint0074.pth",
+    "bytes": 662058585,
+    "sha256": "fae8282f73bc7a0e79010c1c0932233b853229ddbff6f05649786fce0bfe4e49",
+    "included_in_git": false
+  },
+  "metrics": {
+    "raw_pinned_map50_95": 0.7862628600,
+    "thresholded_precision": 0.9204496703948958,
+    "thresholded_recall": 0.9678521428484459,
+    "thresholded_map50": 0.9453607915989440,
+    "thresholded_map50_95": 0.7747561691595155,
+    "aircraft_recall": 1.0,
+    "aircraft_fdr": 0.011519078473722102,
+    "ship_recall": 0.8557213930348259,
+    "ship_fdr": 0.14427860696517414,
+    "vehicle_recall": 0.8333333333333334,
+    "vehicle_fdr": 0.16666666666666666
+  },
+  "provenance": {
+    "predictions_sha256": "d022a9873855013dfcd6a6750dbfd1469f26eec7e068057dcd43e029956f0092",
+    "validation_ground_truth_sha256": "c66e6fc7b32d77b20e4fdc753acb5a72aa36ddddb0eafd4b09dc0dc7f7e86f33",
+    "ultralytics_version": "8.4.71"
+  }
+}

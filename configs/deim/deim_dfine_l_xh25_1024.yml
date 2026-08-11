@@ -1,0 +1,79 @@
+__include__:
+  - ../../.third_party/DEIM/configs/deim_dfine/deim_hgnetv2_l_coco.yml
+
+output_dir: ./runs/train/deim-dfine-l-xh25-1024
+
+num_classes: 25
+remap_mscoco_category: False
+eval_spatial_size: [1024, 1024]
+
+# Single RTX 3090 baseline. Learning rates are linearly scaled from the
+# upstream DEIM-D-FINE-L total batch size of 32 to a total batch size of 8.
+sync_bn: False
+epoches: 24
+checkpoint_freq: 1
+print_freq: 50
+
+lrsheduler: flatcosine
+lr_gamma: 0.5
+warmup_iter: 500
+flat_epoch: 12
+no_aug_epoch: 4
+
+HGNetv2:
+  pretrained: False
+
+optimizer:
+  type: AdamW
+  params:
+    - params: '^(?=.*backbone)(?!.*norm|bn).*$'
+      lr: 0.00000625
+    - params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bn)).*$'
+      weight_decay: 0.0
+  lr: 0.000125
+  betas: [0.9, 0.999]
+  weight_decay: 0.000125
+
+train_dataloader:
+  dataset:
+    img_folder: ./datasets/xh25
+    ann_file: ./datasets/xh25/reports/train-ground-truth.json
+    transforms:
+      ops:
+        - {type: Mosaic, output_size: 512, rotation_range: 10, translation_range: [0.1, 0.1], scaling_range: [0.5, 1.5], probability: 1.0, fill_value: 0, use_cache: False, max_cached_images: 50, random_pop: True}
+        - {type: RandomPhotometricDistort, p: 0.5}
+        - {type: RandomZoomOut, fill: 0}
+        - {type: RandomIoUCrop, p: 0.8}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: RandomHorizontalFlip}
+        - {type: Resize, size: [1024, 1024]}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: ConvertPILImage, dtype: float32, scale: True}
+        - {type: ConvertBoxes, fmt: cxcywh, normalize: True}
+      policy:
+        name: stop_epoch
+        epoch: [2, 12, 20]
+        ops: [Mosaic, RandomPhotometricDistort, RandomZoomOut, RandomIoUCrop]
+      mosaic_prob: 0.5
+  total_batch_size: 8
+  num_workers: 6
+  collate_fn:
+    base_size: 1024
+    base_size_repeat: null
+    mixup_prob: 0.5
+    mixup_epochs: [2, 12]
+    stop_epoch: 20
+
+val_dataloader:
+  dataset:
+    img_folder: ./datasets/xh25
+    ann_file: ./datasets/xh25/reports/val-ground-truth.json
+    transforms:
+      ops:
+        - {type: Resize, size: [1024, 1024]}
+        - {type: ConvertPILImage, dtype: float32, scale: True}
+  total_batch_size: 8
+  num_workers: 4
+
+PostProcessor:
+  num_top_queries: 300

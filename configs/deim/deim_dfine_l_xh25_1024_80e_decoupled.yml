@@ -1,0 +1,32 @@
+__include__:
+  - ./deim_dfine_l_xh25_1024_80e.yml
+
+output_dir: ./runs/train/deim-dfine-l-xh25-1024-80e-decoupled
+
+# BHCL paper ablation 1: classification/localization queries are split after
+# shared self-attention, with dedicated cross-attention and FFN streams.
+DEIM:
+  decoder: BHCLDFINETransformer
+
+BHCLDFINETransformer:
+  feat_channels: [256, 256, 256]
+  feat_strides: [8, 16, 32]
+  hidden_dim: 256
+  num_levels: 3
+  num_layers: 6
+  eval_idx: -1
+  num_queries: 300
+  num_denoising: 100
+  label_noise_ratio: 0.5
+  box_noise_scale: 1.0
+  reg_max: 32
+  reg_scale: 4
+  layer_scale: 1
+  num_points: [3, 6, 3]
+  cross_attn_method: default
+  query_select_method: default
+  activation: silu
+  mlp_act: silu
+  decouple_queries: True
+  bhcl_mode: none
+  bhcl_embedding_dim: 128

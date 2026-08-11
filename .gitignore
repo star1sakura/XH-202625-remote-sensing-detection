@@ -1,4 +1,5 @@
 .worktrees/
+.third_party/
 .venv/
 __pycache__/
 *.py[cod]

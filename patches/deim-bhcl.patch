@@ -1,0 +1,63 @@
+diff --git a/engine/__init__.py b/engine/__init__.py
+index 69baa01..b40f467 100644
+--- a/engine/__init__.py
++++ b/engine/__init__.py
+@@ -2,6 +2,8 @@
+ Copyright (c) 2024 The DEIM Authors. All Rights Reserved.
+ """
+ 
++import sys
++
+ # for register purpose
+ from . import optim
+ from . import data
+@@ -13,4 +15,12 @@ from .backbone import (
+     get_activation,
+     FrozenBatchNorm2d,
+     freeze_batch_norm2d,
+-)
+\ No newline at end of file
++)
++
++# Optional project-level extensions. The stock DEIM classes remain unchanged.
++if 'xh_detect.deim_bhcl_adapter' not in sys.modules:
++    try:
++        from xh_detect import deim_bhcl_adapter
++    except ModuleNotFoundError as error:
++        if error.name != 'xh_detect':
++            raise
+diff --git a/engine/solver/_solver.py b/engine/solver/_solver.py
+--- a/engine/solver/_solver.py
++++ b/engine/solver/_solver.py
+@@ -51,6 +51,14 @@ class BaseSolver(object):
+             print(f'Tuning checkpoint from {self.cfg.tuning}')
+             self.load_tuning_state(self.cfg.tuning)
+ 
++        module = dist_utils.de_parallel(self.model)
++        initialized_after_tuning = False
++        for extension_module in list(module.modules()):
++            initializer = getattr(extension_module, 'initialize_after_tuning', None)
++            if initializer is not None:
++                initializer()
++                initialized_after_tuning = True
++
+         self.model = self.model.to(device)
+         selective_finetune = cfg.yaml_cfg.get('selective_class_row_finetune')
+         if selective_finetune:
+@@ -74,7 +82,15 @@ class BaseSolver(object):
+         self.criterion = self.to(cfg.criterion, device)
+         self.postprocessor = self.to(cfg.postprocessor, device)
+ 
+-        self.ema = self.to(cfg.ema, device)
++        ema = cfg.ema
++        if ema is not None and initialized_after_tuning:
++            ema = type(ema)(
++                self.model,
++                decay=ema.decay,
++                warmups=ema.warmups,
++                start=ema.start,
++            )
++        self.ema = self.to(ema, device)
+         self.scaler = cfg.scaler
+ 
+         self.device = device

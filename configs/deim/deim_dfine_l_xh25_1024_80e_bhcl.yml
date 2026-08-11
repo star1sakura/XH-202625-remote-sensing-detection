@@ -1,0 +1,12 @@
+__include__:
+  - ./deim_dfine_l_xh25_1024_80e_hcl.yml
+
+output_dir: ./runs/train/deim-dfine-l-xh25-1024-80e-bhcl
+
+# BHCL paper ablation 3: complete class-balanced denominator and EMA prototype
+# bank. The hierarchy is ship/aircraft/FSC -> the 25 official leaf classes.
+BHCLDFINETransformer:
+  bhcl_mode: bhcl
+
+BHCLDEIMCriterion:
+  bhcl_mode: bhcl

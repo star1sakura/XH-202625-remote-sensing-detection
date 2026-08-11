@@ -1,0 +1,19 @@
+__include__:
+  - ./deim_dfine_l_xh25_1024.yml
+
+output_dir: ./runs/train/deim-dfine-l-xh25-1024-80e
+
+# Full 80-epoch restart. Phase boundaries preserve the proportions used by
+# the verified 48-epoch run so duration is the controlled variable.
+epoches: 80
+flat_epoch: 40
+no_aug_epoch: 13
+
+train_dataloader:
+  dataset:
+    transforms:
+      policy:
+        epoch: [7, 40, 67]
+  collate_fn:
+    mixup_epochs: [7, 40]
+    stop_epoch: 67
