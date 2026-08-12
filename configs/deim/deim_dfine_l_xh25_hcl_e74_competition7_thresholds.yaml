@@ -1,0 +1,29 @@
+# Validation-selected thresholds for the HCL epoch-74 checkpoint.
+# They strictly improve B90 on mAP50-95 and all six competition Recall/FDR
+# metrics under the pinned evaluation protocol.
+class_thresholds:
+  0: 0.09
+  1: 0.17
+  2: 0.50
+  3: 0.50
+  4: 0.48
+  5: 0.50
+  6: 0.50
+  7: 0.40
+  8: 0.11
+  9: 0.65
+  10: 0.45
+  11: 0.40
+  12: 0.40
+  13: 0.40
+  14: 0.40
+  15: 0.20
+  16: 0.40
+  17: 0.40
+  18: 0.30
+  19: 0.20
+  20: 0.50
+  21: 0.24
+  22: 0.60
+  23: 0.20
+  24: 0.455

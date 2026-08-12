@@ -1,0 +1,27 @@
+__include__:
+  - ./deim_dfine_l_xh25_1024_80e_decoupled.yml
+
+output_dir: ./runs/train/deim-dfine-l-xh25-1024-80e-hcl
+
+# BHCL paper ablation 2: hierarchy-aware supervised contrastive learning,
+# without prototype completion or class-balanced negatives.
+BHCLDFINETransformer:
+  bhcl_mode: hcl
+
+criterion: BHCLDEIMCriterion
+
+BHCLDEIMCriterion:
+  weight_dict: {loss_vfl: 1, loss_mal: 1, loss_bbox: 5, loss_giou: 2, loss_fgl: 0.15, loss_ddf: 1.5, loss_bhcl: 0.6}
+  losses: [mal, boxes, local, bhcl]
+  alpha: 0.75
+  gamma: 1.5
+  reg_max: 32
+  matcher:
+    type: HungarianMatcher
+    weight_dict: {cost_class: 2, cost_bbox: 5, cost_giou: 2}
+    alpha: 0.25
+    gamma: 2.0
+  bhcl_mode: hcl
+  bhcl_embedding_dim: 128
+  bhcl_temperature: 0.1
+  bhcl_epsilon: 0.1

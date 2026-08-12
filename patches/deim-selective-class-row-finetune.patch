@@ -1,0 +1,68 @@
+diff --git a/engine/solver/_solver.py b/engine/solver/_solver.py
+index 925e45f..580539c 100644
+--- a/engine/solver/_solver.py
++++ b/engine/solver/_solver.py
+@@ -51,8 +51,24 @@ class BaseSolver(object):
+             print(f'Tuning checkpoint from {self.cfg.tuning}')
+             self.load_tuning_state(self.cfg.tuning)
+ 
++        self.model = self.model.to(device)
++        selective_finetune = cfg.yaml_cfg.get('selective_class_row_finetune')
++        if selective_finetune:
++            from xh_detect.deim_selective_finetune import register_class_row_gradient_masks
++
++            matched = register_class_row_gradient_masks(
++                self.model,
++                class_ids=selective_finetune['class_ids'],
++                parameter_patterns=selective_finetune['parameter_patterns'],
++                num_classes=cfg.yaml_cfg['num_classes'],
++            )
++            print(
++                'Selective class-row fine-tuning: '
++                f"class_ids={selective_finetune['class_ids']}, parameters={list(matched)}"
++            )
++
+         self.model = dist_utils.warp_model(
+-            self.model.to(device), sync_bn=cfg.sync_bn, find_unused_parameters=cfg.find_unused_parameters
++            self.model, sync_bn=cfg.sync_bn, find_unused_parameters=cfg.find_unused_parameters
+         )
+ 
+         self.criterion = self.to(cfg.criterion, device)
+diff --git a/engine/solver/det_engine.py b/engine/solver/det_engine.py
+index 5d53dda..138becf 100644
+--- a/engine/solver/det_engine.py
++++ b/engine/solver/det_engine.py
+@@ -25,6 +25,9 @@ def train_one_epoch(self_lr_scheduler, lr_scheduler, model: torch.nn.Module, cri
+                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
+                     device: torch.device, epoch: int, max_norm: float = 0, **kwargs):
+     model.train()
++    if kwargs.get('freeze_norm_eval', False):
++        from xh_detect.deim_selective_finetune import set_batch_norm_eval
++        set_batch_norm_eval(model)
+     criterion.train()
+     metric_logger = MetricLogger(delimiter="  ")
+     metric_logger.add_meter('lr', SmoothedValue(window_size=1, fmt='{value:.6f}'))
+diff --git a/engine/solver/det_solver.py b/engine/solver/det_solver.py
+--- a/engine/solver/det_solver.py
++++ b/engine/solver/det_solver.py
+@@ -68,6 +68,10 @@ class DetSolver(BaseSolver):
+             if dist_utils.is_dist_available_and_initialized():
+                 self.train_dataloader.sampler.set_epoch(epoch)
+ 
++            selective_finetune = args.yaml_cfg.get('selective_class_row_finetune')
++            freeze_norm_eval = bool(
++                selective_finetune and selective_finetune.get('freeze_norm_eval', False)
++            )
+             if epoch == self.train_dataloader.collate_fn.stop_epoch:
+                 self.load_resume_state(str(self.output_dir / 'best_stg1.pth'))
+                 self.ema.decay = self.train_dataloader.collate_fn.ema_restart_decay
+@@ -87,7 +91,8 @@ class DetSolver(BaseSolver):
+                 ema=self.ema, 
+                 scaler=self.scaler, 
+                 lr_warmup_scheduler=self.lr_warmup_scheduler,
+-                writer=self.writer
++                writer=self.writer,
++                freeze_norm_eval=freeze_norm_eval,
+             )
+ 
+             if not self.self_lr_scheduler:  # update by epoch 
