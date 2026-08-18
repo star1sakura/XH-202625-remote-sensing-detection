@@ -99,12 +99,19 @@ def test_prepare_xh25_command_reports_output(
     source = tmp_path / "data"
     source.mkdir()
     output = tmp_path / "xh25"
+    reviewed_archive = tmp_path / "reviewed.zip"
+    duplicate_csv = tmp_path / "duplicates.csv"
+    reviewed_archive.write_bytes(b"zip")
+    duplicate_csv.write_text("left,right\n", encoding="utf-8")
     prepare_dataset_mock.return_value = SimpleNamespace(
         output_root=output,
         train_stems=frozenset({"a", "b"}),
         val_stems=frozenset({"c"}),
         train_class_counts={class_id: 1 for class_id in range(25)},
         val_class_counts={class_id: 1 for class_id in range(25)},
+        reviewed_core_stems=frozenset({"c"}),
+        added_val_stems=frozenset(),
+        duplicate_group_pairs=(("a", "c"),),
     )
 
     result = CliRunner().invoke(
@@ -119,13 +126,44 @@ def test_prepare_xh25_command_reports_output(
             "0.15",
             "--seed",
             "42",
+            "--reviewed-archive",
+            str(reviewed_archive),
+            "--duplicate-groups-csv",
+            str(duplicate_csv),
         ],
     )
 
     assert result.exit_code == 0
     assert json.loads(result.stdout)["train_images"] == 2
     assert json.loads(result.stdout)["val_images"] == 1
-    prepare_dataset_mock.assert_called_once_with(source, output, val_ratio=0.15, seed=42)
+    assert json.loads(result.stdout)["reviewed_core_images"] == 1
+    assert json.loads(result.stdout)["duplicate_group_pairs"] == 1
+    prepare_dataset_mock.assert_called_once_with(
+        source,
+        output,
+        val_ratio=0.15,
+        seed=42,
+        reviewed_archive=reviewed_archive,
+        duplicate_groups_csv=duplicate_csv,
+    )
+
+
+@patch("xh_detect.cli.prepare_dataset")
+def test_prepare_xh25_command_reports_validation_errors(
+    prepare_dataset_mock: Mock,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "data"
+    source.mkdir()
+    prepare_dataset_mock.side_effect = ValueError("reviewed archive is invalid")
+
+    result = CliRunner().invoke(
+        app,
+        ["prepare-xh25", "--source-root", str(source)],
+    )
+
+    assert result.exit_code != 0
+    assert "reviewed archive is invalid" in result.output
 
 
 @patch("xh_detect.cli.publish_train_mining_artifacts")

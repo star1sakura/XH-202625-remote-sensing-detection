@@ -151,6 +151,10 @@ def optimize_validation_groups(
     val_ratio: float,
     seed: int,
     stable_rank: Callable[[int, str], str],
+    *,
+    frozen_selected: frozenset[str] | set[str] = frozenset(),
+    min_val_images: int | None = None,
+    max_val_images: int | None = None,
 ) -> frozenset[str]:
     group_stats, totals = _build_group_stats(records)
     required = _required_val_group_counts(class_groups, val_ratio)
@@ -158,6 +162,19 @@ def optimize_validation_groups(
         class_id: len(class_groups[class_id]) - 1 for class_id in range(_CLASS_COUNT)
     }
     selected = set(initial_selected)
+    frozen = frozenset(frozen_selected)
+    if not frozen.issubset(selected):
+        raise ValueError("frozen validation groups must be initially selected")
+    if min_val_images is not None and min_val_images < 0:
+        raise ValueError("min_val_images must be non-negative")
+    if max_val_images is not None and max_val_images < 0:
+        raise ValueError("max_val_images must be non-negative")
+    if (
+        min_val_images is not None
+        and max_val_images is not None
+        and min_val_images > max_val_images
+    ):
+        raise ValueError("min_val_images cannot exceed max_val_images")
     selected_group_counts = dict.fromkeys(range(_CLASS_COUNT), 0)
     val_image_count = 0
     val_box_counts = [0] * _CLASS_COUNT
@@ -174,6 +191,17 @@ def optimize_validation_groups(
             selected_group_counts[class_id] += 1
 
     def move_is_safe(remove: str | None, add: str | None) -> bool:
+        if remove is not None and remove in frozen:
+            return False
+        image_count = val_image_count
+        if remove is not None:
+            image_count -= group_stats[remove].image_count
+        if add is not None:
+            image_count += group_stats[add].image_count
+        if min_val_images is not None and image_count < min_val_images:
+            return False
+        if max_val_images is not None and image_count > max_val_images:
+            return False
         affected = set()
         if remove is not None:
             affected.update(group_stats[remove].classes)

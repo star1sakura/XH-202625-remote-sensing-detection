@@ -58,6 +58,24 @@ PyTorch，防止依赖解析器下载另一套 PyTorch/CUDA。普通 CPU 开发�
   --seed 42
 ```
 
+如果已有人工复核验证包，可在保留复核样本为固定验证核心的同时扩充验证集。复核 ZIP
+需要包含同一包根目录下的 `images/val/*.jpg` 和 `labels/val/*.txt`；图片必须与原始数据
+逐字节一致，标签会覆盖原始版本。人工确认的近重复关系使用 `left,right` 两列 CSV：
+
+```bash
+.venv/bin/xh-detect prepare-xh25 \
+  --source-root data \
+  --output-root datasets/xh25 \
+  --val-ratio 0.30 \
+  --seed 20260818 \
+  --reviewed-archive cache/xh25-reviewed.zip \
+  --duplicate-groups-csv cache/xh25-confirmed-near-duplicates.csv
+```
+
+输出中的 `manifests/val-reviewed-core.txt` 和 `manifests/val-added.txt` 分别记录人工复核
+核心与新增验证样本，`manifests/near-duplicate-unions.csv` 保存实际采用的重复分组关系。
+切分以向上取整后的验证图片数为下限，并保证同源及确认近重复组不会跨 train/val。
+
 一轮官方 HBB baseline 训练：
 
 ```bash

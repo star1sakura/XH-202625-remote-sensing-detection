@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import ctypes
 import json
+import math
 import os
 import subprocess
 import threading
+import zipfile
 from collections import Counter
 from contextlib import contextmanager
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from itertools import combinations
 from pathlib import Path
 from time import perf_counter
@@ -74,6 +76,20 @@ def _write_complete_source(source_root: Path) -> None:
                 _write_class_sample(source_root, f"{group}_crop2", class_id)
             else:
                 _write_class_sample(source_root, group, class_id)
+
+
+def _write_reviewed_archive(
+    source_root: Path,
+    archive_path: Path,
+    labels: dict[str, str],
+) -> None:
+    with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for stem, label_text in sorted(labels.items()):
+            archive.write(
+                source_root / "images" / "train" / f"{stem}.jpg",
+                f"reviewed/images/val/{stem}.jpg",
+            )
+            archive.writestr(f"reviewed/labels/val/{stem}.txt", label_text)
 
 
 def _write_multilabel_sample(
@@ -431,6 +447,23 @@ def test_audit_dataset_buckets_duplicate_candidates_by_hash_and_group(
     assert report.near_duplicate_candidates == (("first", "second"),)
 
 
+def test_near_duplicate_candidates_use_six_bit_phash_threshold() -> None:
+    first = _memory_record("first", {0: 1})
+    within_threshold = replace(
+        _memory_record("within", {0: 1}),
+        perceptual_hash="000000000000003f",
+    )
+    outside_threshold = replace(
+        _memory_record("outside", {0: 1}),
+        perceptual_hash="000000000000007f",
+    )
+
+    assert xh25_module._near_duplicate_candidates((first, within_threshold, outside_threshold)) == (
+        ("first", "within"),
+        ("outside", "within"),
+    )
+
+
 def test_audit_dataset_aggregates_pairing_image_and_label_errors(tmp_path: Path) -> None:
     source_root = tmp_path / "dataset"
     _write_image(source_root / "images" / "train" / "missing_label.jpg")
@@ -608,8 +641,18 @@ def test_prepare_dataset_is_deterministic_group_safe_and_writes_metadata(
         (first_output / "manifests" / "train.txt").read_text(encoding="utf-8").splitlines()
     )
     val_manifest = (first_output / "manifests" / "val.txt").read_text(encoding="utf-8").splitlines()
+    reviewed_manifest = (
+        (first_output / "manifests" / "val-reviewed-core.txt")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    added_manifest = (
+        (first_output / "manifests" / "val-added.txt").read_text(encoding="utf-8").splitlines()
+    )
     assert train_manifest == sorted(train_manifest)
     assert val_manifest == sorted(val_manifest)
+    assert reviewed_manifest == []
+    assert added_manifest == val_manifest
     assert train_manifest == [f"images/train/{stem}.jpg" for stem in sorted(first.train_stems)]
     assert val_manifest == [f"images/val/{stem}.jpg" for stem in sorted(first.val_stems)]
     assert all(not Path(entry).is_absolute() for entry in train_manifest + val_manifest)
@@ -692,6 +735,10 @@ def test_prepare_dataset_is_deterministic_group_safe_and_writes_metadata(
     assert analysis["source"]["images"] == 76
     assert analysis["split"]["group_overlap"] == 0
     assert analysis["val_ratio"] == 0.15
+    assert analysis["minimum_val_images"] == 12
+    assert analysis["actual_val_ratio"] >= 0.15
+    assert analysis["reviewed"]["core_images"] == 0
+    assert analysis["reviewed"]["added_val_images"] == len(first.val_stems)
     assert analysis["seed"] == 42
     assert set(analysis["link_mode_counts"]) <= {"hardlink", "symlink", "copy"}
     analysis_markdown = (first_output / "reports" / "dataset-analysis.md").read_text(
@@ -731,6 +778,131 @@ def test_prepare_dataset_is_deterministic_group_safe_and_writes_metadata(
         "train_groups": analysis["split"]["train"]["source_groups"],
         "val_groups": analysis["split"]["val"]["source_groups"],
     }
+
+
+def test_prepare_dataset_applies_reviewed_archive_and_freezes_duplicate_closure(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    first_output = tmp_path / "first"
+    second_output = tmp_path / "second"
+    reviewed_archive = tmp_path / "reviewed.zip"
+    duplicate_csv = tmp_path / "duplicates.csv"
+    _write_complete_source(source_root)
+    reviewed_stem = "class01_group0"
+    reviewed_label = "1 0.25 0.25 0.2 0.2\n1 0.75 0.75 0.2 0.2\n"
+    _write_reviewed_archive(source_root, reviewed_archive, {reviewed_stem: reviewed_label})
+    duplicate_csv.write_text(
+        "left,right\nclass01_group0,class01_group1\n",
+        encoding="utf-8",
+    )
+
+    first = prepare_dataset(
+        source_root,
+        first_output,
+        val_ratio=0.3,
+        seed=20260818,
+        reviewed_archive=reviewed_archive,
+        duplicate_groups_csv=duplicate_csv,
+    )
+    second = prepare_dataset(
+        source_root,
+        second_output,
+        val_ratio=0.3,
+        seed=20260818,
+        reviewed_archive=reviewed_archive,
+        duplicate_groups_csv=duplicate_csv,
+    )
+
+    assert len(first.val_stems) >= math.ceil(76 * 0.3)
+    assert first.val_stems == second.val_stems
+    assert first.reviewed_core_stems == frozenset({reviewed_stem})
+    assert first.added_val_stems == first.val_stems - {reviewed_stem}
+    assert {"class01_group0", "class01_group1"}.issubset(first.val_stems)
+    assert first.duplicate_group_pairs == (("class01_group0", "class01_group1"),)
+    assert (first_output / "labels" / "val" / f"{reviewed_stem}.txt").read_text(
+        encoding="utf-8"
+    ) == reviewed_label
+
+    reviewed_manifest = (
+        (first_output / "manifests" / "val-reviewed-core.txt")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    added_manifest = {
+        Path(line).stem
+        for line in (first_output / "manifests" / "val-added.txt")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    }
+    assert reviewed_manifest == [f"images/val/{reviewed_stem}.jpg"]
+    assert added_manifest == set(first.added_val_stems)
+    assert (first_output / "manifests" / "near-duplicate-unions.csv").read_text(
+        encoding="utf-8"
+    ) == "left,right\nclass01_group0,class01_group1\n"
+
+    source_groups = json.loads(
+        (first_output / "manifests" / "source-groups.json").read_text(encoding="utf-8")
+    )
+    assert source_groups["class01_group0"]["group"] == "class01_group0"
+    assert source_groups["class01_group1"]["group"] == "class01_group0"
+    analysis = json.loads(
+        (first_output / "reports" / "dataset-analysis.json").read_text(encoding="utf-8")
+    )
+    assert analysis["reviewed"]["core_images"] == 1
+    assert analysis["reviewed"]["targets"] == 2
+    assert analysis["reviewed"]["archive_sha256"]
+    assert analysis["accepted_duplicate_unions"] == [["class01_group0", "class01_group1"]]
+    assert analysis["source"]["raw_source_groups"] == 75
+    assert analysis["source"]["effective_source_groups"] == 74
+
+
+def test_prepare_dataset_rejects_reviewed_image_that_differs_from_source(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    output_root = tmp_path / "output"
+    reviewed_archive = tmp_path / "reviewed.zip"
+    _write_complete_source(source_root)
+    with zipfile.ZipFile(reviewed_archive, "w") as archive:
+        archive.writestr("reviewed/images/val/class00_group0_crop1.jpg", b"different")
+        archive.writestr(
+            "reviewed/labels/val/class00_group0_crop1.txt",
+            "0 0.5 0.5 0.5 0.5\n",
+        )
+
+    with pytest.raises(ValueError, match="reviewed image differs"):
+        prepare_dataset(source_root, output_root, reviewed_archive=reviewed_archive)
+
+    assert not output_root.exists()
+    assert not list(tmp_path.glob(".output.reviewed-*"))
+
+
+def test_prepare_dataset_rejects_unsafe_reviewed_archive_path(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    reviewed_archive = tmp_path / "reviewed.zip"
+    _write_complete_source(source_root)
+    with zipfile.ZipFile(reviewed_archive, "w") as archive:
+        archive.writestr("../escape.txt", "unsafe")
+
+    with pytest.raises(ValueError, match="unsafe path"):
+        prepare_dataset(
+            source_root,
+            tmp_path / "output",
+            reviewed_archive=reviewed_archive,
+        )
+
+
+def test_prepare_dataset_rejects_unknown_duplicate_group_stem(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    duplicate_csv = tmp_path / "duplicates.csv"
+    _write_complete_source(source_root)
+    duplicate_csv.write_text("left,right\nclass00_group0_crop1,missing\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unknown stems"):
+        prepare_dataset(
+            source_root,
+            tmp_path / "output",
+            duplicate_groups_csv=duplicate_csv,
+        )
 
 
 def test_publish_train_mining_artifacts_upgrades_existing_dataset(tmp_path: Path) -> None:
@@ -887,13 +1059,13 @@ def test_prepare_dataset_backtracks_to_find_valid_multilabel_split(
         seed=0,
     )
 
-    assert prepared.val_groups == frozenset({"g0", "g4", "h0"})
-    assert prepared.train_groups == frozenset({"g1", "g2", "g3", "h1", "h2"})
+    assert prepared.val_groups == frozenset({"g0", "g1", "g4", "h0"})
+    assert prepared.train_groups == frozenset({"g2", "g3", "h1", "h2"})
     assert all(prepared.train_class_counts[class_id] > 0 for class_id in range(25))
     assert all(prepared.val_class_counts[class_id] > 0 for class_id in range(25))
 
 
-def test_prepare_dataset_allows_safe_validation_below_image_target(
+def test_prepare_dataset_rejects_validation_below_image_target(
     tmp_path: Path,
 ) -> None:
     source_root = tmp_path / "source"
@@ -902,19 +1074,13 @@ def test_prepare_dataset_allows_safe_validation_below_image_target(
     for crop_index in range(1, 10):
         _write_multilabel_sample(source_root, f"large_crop{crop_index}", all_classes)
 
-    prepared = prepare_dataset(
-        source_root,
-        tmp_path / "output",
-        val_ratio=0.49,
-        seed=1,
-    )
-
-    assert prepared.val_groups == frozenset({"small"})
-    assert prepared.train_groups == frozenset({"large"})
-    assert len(prepared.val_stems) == 1
-    assert len(prepared.train_stems) == 9
-    assert all(prepared.train_class_counts[class_id] > 0 for class_id in range(25))
-    assert all(prepared.val_class_counts[class_id] > 0 for class_id in range(25))
+    with pytest.raises(ValueError, match=r"target=5, actual=1"):
+        prepare_dataset(
+            source_root,
+            tmp_path / "output",
+            val_ratio=0.49,
+            seed=1,
+        )
 
 
 def test_select_split_handles_thousands_of_groups_without_recursion() -> None:
