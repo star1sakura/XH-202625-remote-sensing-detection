@@ -303,8 +303,26 @@ def prepare_xh25(
     output_root: Annotated[Path, typer.Option()] = Path("datasets/xh25"),
     val_ratio: Annotated[float, typer.Option(min=0.05, max=0.4)] = 0.15,
     seed: Annotated[int, typer.Option(min=0)] = 42,
+    reviewed_archive: Annotated[
+        Path | None,
+        typer.Option(exists=True, dir_okay=False),
+    ] = None,
+    duplicate_groups_csv: Annotated[
+        Path | None,
+        typer.Option(exists=True, dir_okay=False),
+    ] = None,
 ) -> None:
-    prepared = prepare_dataset(source_root, output_root, val_ratio=val_ratio, seed=seed)
+    try:
+        prepared = prepare_dataset(
+            source_root,
+            output_root,
+            val_ratio=val_ratio,
+            seed=seed,
+            reviewed_archive=reviewed_archive,
+            duplicate_groups_csv=duplicate_groups_csv,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
     typer.echo(
         json.dumps(
             {
@@ -313,6 +331,9 @@ def prepare_xh25(
                 "val_images": len(prepared.val_stems),
                 "train_targets": dict(prepared.train_class_counts),
                 "val_targets": dict(prepared.val_class_counts),
+                "reviewed_core_images": len(prepared.reviewed_core_stems),
+                "added_val_images": len(prepared.added_val_stems),
+                "duplicate_group_pairs": len(prepared.duplicate_group_pairs),
             },
             ensure_ascii=False,
         )

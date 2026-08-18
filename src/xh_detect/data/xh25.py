@@ -1,22 +1,27 @@
 from __future__ import annotations
 
+import csv
 import ctypes
 import hashlib
+import io
 import json
 import math
 import os
 import re
 import shutil
 import stat
+import zipfile
 from collections import Counter
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import combinations
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from tempfile import NamedTemporaryFile, mkdtemp
 from types import MappingProxyType
+from typing import BinaryIO
 from uuid import uuid4
 
+import numpy as np
 import yaml
 from PIL import Image
 
@@ -32,8 +37,21 @@ from xh_detect.types import ObjectAnnotation, Polygon4
 
 _CROP_SUFFIX = re.compile(r"_crop\d+$", re.IGNORECASE)
 _BOUNDARY_TOLERANCE = 1e-6
+_PHASH_DISTANCE_THRESHOLD = 6
 _TRANSACTION_MARKER_NAME = ".xh25-transaction"
 _WINDOWS_DELETE_RETRIES = 3
+
+
+def _dct_basis(size: int = 32, coefficients: int = 8) -> np.ndarray:
+    positions = np.arange(size, dtype=np.float64) + 0.5
+    frequencies = np.arange(coefficients, dtype=np.float64)[:, None]
+    basis = np.cos(np.pi * frequencies * positions / size)
+    basis[0] *= math.sqrt(1.0 / size)
+    basis[1:] *= math.sqrt(2.0 / size)
+    return basis
+
+
+_PHASH_DCT_BASIS = _dct_basis()
 
 
 @dataclass(frozen=True)
@@ -91,6 +109,9 @@ class PreparedDataset:
     val_groups: frozenset[str]
     train_class_counts: Mapping[int, int]
     val_class_counts: Mapping[int, int]
+    reviewed_core_stems: frozenset[str] = frozenset()
+    added_val_stems: frozenset[str] = frozenset()
+    duplicate_group_pairs: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "output_root", Path(self.output_root))
@@ -98,6 +119,13 @@ class PreparedDataset:
         object.__setattr__(self, "val_stems", frozenset(self.val_stems))
         object.__setattr__(self, "train_groups", frozenset(self.train_groups))
         object.__setattr__(self, "val_groups", frozenset(self.val_groups))
+        object.__setattr__(self, "reviewed_core_stems", frozenset(self.reviewed_core_stems))
+        object.__setattr__(self, "added_val_stems", frozenset(self.added_val_stems))
+        object.__setattr__(
+            self,
+            "duplicate_group_pairs",
+            tuple(tuple(pair) for pair in self.duplicate_group_pairs),
+        )
         object.__setattr__(
             self,
             "train_class_counts",
@@ -120,6 +148,35 @@ class _ValidationSearchFrame:
     class_id: int
     candidates: tuple[str, ...]
     next_index: int = 0
+
+
+@dataclass(frozen=True)
+class _ReviewedArchive:
+    core_stems: frozenset[str]
+    label_overrides: Mapping[str, Path]
+    sha256: str
+    target_count: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "core_stems", frozenset(self.core_stems))
+        object.__setattr__(self, "label_overrides", MappingProxyType(dict(self.label_overrides)))
+
+
+@dataclass(frozen=True)
+class _PreparationMetadata:
+    reviewed_core_stems: frozenset[str] = frozenset()
+    reviewed_archive_sha256: str | None = None
+    reviewed_target_count: int = 0
+    duplicate_group_pairs: tuple[tuple[str, str], ...] = ()
+    raw_source_groups: int = 0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "reviewed_core_stems", frozenset(self.reviewed_core_stems))
+        object.__setattr__(
+            self,
+            "duplicate_group_pairs",
+            tuple(tuple(pair) for pair in self.duplicate_group_pairs),
+        )
 
 
 def source_group_id(stem: str) -> str:
@@ -221,18 +278,149 @@ def parse_yolo_hbb_label(
     return tuple(annotations)
 
 
-def _average_hash(image: Image.Image) -> str:
-    resized = image.convert("L").resize((8, 8), Image.Resampling.LANCZOS)
-    get_flattened_data = getattr(resized, "get_flattened_data", None)
-    pixels = list(resized.getdata()) if get_flattened_data is None else list(get_flattened_data())
-    mean = sum(pixels) / len(pixels)
+def _perceptual_hash(image: Image.Image) -> str:
+    resized = image.convert("L").resize((32, 32), Image.Resampling.LANCZOS)
+    pixels = np.asarray(resized, dtype=np.float64)
+    coefficients = _PHASH_DCT_BASIS @ pixels @ _PHASH_DCT_BASIS.T
+    flattened = coefficients.reshape(-1)
+    median = float(np.median(flattened[1:]))
     bits = 0
-    for pixel in pixels:
-        bits = (bits << 1) | int(pixel >= mean)
+    for coefficient in flattened:
+        bits = (bits << 1) | int(coefficient >= median)
     return f"{bits:016x}"
 
 
-def audit_dataset(source_root: Path) -> DatasetAudit:
+def _near_duplicate_candidates(
+    records: tuple[ImageRecord, ...] | list[ImageRecord],
+) -> tuple[tuple[str, str], ...]:
+    hash_values = [int(record.perceptual_hash, 16) for record in records]
+    candidate_indexes: set[tuple[int, int]] = set()
+    for shift in range(0, 64, 8):
+        buckets: dict[int, list[int]] = {}
+        for index, value in enumerate(hash_values):
+            buckets.setdefault((value >> shift) & 0xFF, []).append(index)
+        for bucket in buckets.values():
+            candidate_indexes.update(combinations(bucket, 2))
+
+    candidates = {
+        tuple(sorted((records[first].stem, records[second].stem)))
+        for first, second in candidate_indexes
+        if records[first].group_id != records[second].group_id
+        and (hash_values[first] ^ hash_values[second]).bit_count() <= _PHASH_DISTANCE_THRESHOLD
+    }
+    return tuple(sorted(candidates))
+
+
+def _sha256_binary(stream: BinaryIO) -> str:
+    digest = hashlib.sha256()
+    while chunk := stream.read(1024 * 1024):
+        digest.update(chunk)
+    return digest.hexdigest().upper()
+
+
+def _sha256_file(path: Path) -> str:
+    with path.open("rb") as stream:
+        return _sha256_binary(stream)
+
+
+def _safe_archive_parts(info: zipfile.ZipInfo) -> tuple[str, ...]:
+    if "\\" in info.filename:
+        raise ValueError(f"reviewed archive contains an unsafe path: {info.filename}")
+    archive_path = PurePosixPath(info.filename)
+    if archive_path.is_absolute() or ".." in archive_path.parts:
+        raise ValueError(f"reviewed archive contains an unsafe path: {info.filename}")
+    if info.flag_bits & 0x1:
+        raise ValueError(f"reviewed archive contains an encrypted entry: {info.filename}")
+    unix_mode = (info.external_attr >> 16) & 0xFFFF
+    if unix_mode and stat.S_ISLNK(unix_mode):
+        raise ValueError(f"reviewed archive contains a symbolic link: {info.filename}")
+    return archive_path.parts
+
+
+def _load_reviewed_archive(
+    source_root: Path,
+    archive_path: Path,
+    temporary_root: Path,
+) -> _ReviewedArchive:
+    archive_path = Path(archive_path)
+    if not archive_path.is_file():
+        raise ValueError(f"reviewed archive does not exist: {archive_path}")
+
+    source_images = source_root / "images" / "train"
+    source_labels = source_root / "labels" / "train"
+    extracted_labels = temporary_root / "labels"
+    extracted_labels.mkdir(parents=True)
+    image_members: dict[str, zipfile.ZipInfo] = {}
+    label_members: dict[str, zipfile.ZipInfo] = {}
+    archive_roots: set[tuple[str, ...]] = set()
+
+    try:
+        archive = zipfile.ZipFile(archive_path)
+    except (OSError, zipfile.BadZipFile) as error:
+        raise ValueError(f"cannot open reviewed archive: {archive_path}: {error}") from error
+
+    with archive:
+        for info in archive.infolist():
+            parts = _safe_archive_parts(info)
+            if info.is_dir() or len(parts) < 3:
+                continue
+            parent = tuple(part.casefold() for part in parts[-3:-1])
+            suffix = PurePosixPath(parts[-1]).suffix.casefold()
+            if parent == ("images", "val") and suffix == ".jpg":
+                destination = image_members
+            elif parent == ("labels", "val") and suffix == ".txt":
+                destination = label_members
+            else:
+                continue
+            stem = PurePosixPath(parts[-1]).stem
+            if not stem or stem in destination:
+                raise ValueError(f"reviewed archive contains a duplicate stem: {stem}")
+            destination[stem] = info
+            archive_roots.add(parts[:-3])
+
+        if not image_members or not label_members:
+            raise ValueError("reviewed archive must contain images/val and labels/val")
+        if set(image_members) != set(label_members):
+            missing_labels = sorted(set(image_members) - set(label_members))
+            missing_images = sorted(set(label_members) - set(image_members))
+            raise ValueError(
+                "reviewed archive image/label stems are inconsistent: "
+                f"missing_labels={missing_labels[:5]}, missing_images={missing_images[:5]}"
+            )
+        if len(archive_roots) != 1:
+            raise ValueError("reviewed archive images and labels must share one package root")
+
+        target_count = 0
+        label_overrides: dict[str, Path] = {}
+        for stem in sorted(image_members):
+            source_image = source_images / f"{stem}.jpg"
+            source_label = source_labels / f"{stem}.txt"
+            if not source_image.is_file() or not source_label.is_file():
+                raise ValueError(f"reviewed archive stem is missing from source dataset: {stem}")
+            with archive.open(image_members[stem]) as reviewed_image:
+                reviewed_hash = _sha256_binary(reviewed_image)
+            if reviewed_hash != _sha256_file(source_image):
+                raise ValueError(f"reviewed image differs from source image: {stem}")
+
+            label_path = extracted_labels / f"{stem}.txt"
+            with archive.open(label_members[stem]) as reviewed_label:
+                label_path.write_bytes(reviewed_label.read())
+            target_count += len(_read_normalized_hbb(label_path))
+            label_overrides[stem] = label_path
+
+    return _ReviewedArchive(
+        core_stems=frozenset(image_members),
+        label_overrides=label_overrides,
+        sha256=_sha256_file(archive_path),
+        target_count=target_count,
+    )
+
+
+def audit_dataset(
+    source_root: Path,
+    *,
+    label_overrides: Mapping[str, Path] | None = None,
+) -> DatasetAudit:
     images_dir = source_root / "images" / "train"
     labels_dir = source_root / "labels" / "train"
     errors: list[str] = []
@@ -246,6 +434,12 @@ def audit_dataset(source_root: Path) -> DatasetAudit:
 
     image_paths = {path.stem: path for path in sorted(images_dir.glob("*.jpg"))}
     label_paths = {path.stem: path for path in sorted(labels_dir.glob("*.txt"))}
+    override_paths = dict(label_overrides or {})
+    for stem, path in sorted(override_paths.items()):
+        if stem not in image_paths or stem not in label_paths:
+            errors.append(f"label override does not match a source image and label: {stem}")
+        elif not Path(path).is_file():
+            errors.append(f"label override does not exist: {path}")
     if not image_paths:
         errors.append(f"dataset is empty: no .jpg images in {images_dir}")
     if not label_paths:
@@ -264,7 +458,7 @@ def audit_dataset(source_root: Path) -> DatasetAudit:
 
     for stem in sorted(image_paths.keys() & label_paths.keys()):
         image_path = image_paths[stem]
-        label_path = label_paths[stem]
+        label_path = Path(override_paths.get(stem, label_paths[stem]))
         image_details: tuple[int, int, str, str] | None = None
         try:
             with Image.open(image_path) as image:
@@ -277,7 +471,7 @@ def audit_dataset(source_root: Path) -> DatasetAudit:
                         width,
                         height,
                         str(image.mode),
-                        _average_hash(image),
+                        _perceptual_hash(image),
                     )
         except Exception as error:
             errors.append(f"{image_path}: damaged image: {error}")
@@ -324,15 +518,6 @@ def audit_dataset(source_root: Path) -> DatasetAudit:
     if errors:
         raise ValueError("dataset audit failed:\n" + "\n".join(errors))
 
-    records_by_hash: dict[str, list[ImageRecord]] = {}
-    for record in records:
-        records_by_hash.setdefault(record.perceptual_hash, []).append(record)
-    duplicate_candidates = {
-        tuple(sorted((first.stem, second.stem)))
-        for bucket in records_by_hash.values()
-        for first, second in combinations(bucket, 2)
-        if first.group_id != second.group_id
-    }
     return DatasetAudit(
         images=len(image_paths),
         labels=len(label_paths),
@@ -342,8 +527,80 @@ def audit_dataset(source_root: Path) -> DatasetAudit:
         modes=dict(modes),
         source_groups=len({record.group_id for record in records}),
         invalid_lines=0,
-        near_duplicate_candidates=tuple(sorted(duplicate_candidates)),
+        near_duplicate_candidates=_near_duplicate_candidates(records),
         records=tuple(records),
+    )
+
+
+def _read_duplicate_group_pairs(
+    csv_path: Path | None,
+    available_stems: set[str],
+) -> tuple[tuple[str, str], ...]:
+    if csv_path is None:
+        return ()
+    csv_path = Path(csv_path)
+    if not csv_path.is_file():
+        raise ValueError(f"duplicate group CSV does not exist: {csv_path}")
+
+    pairs: set[tuple[str, str]] = set()
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as stream:
+        reader = csv.DictReader(stream)
+        if reader.fieldnames is None or not {"left", "right"}.issubset(reader.fieldnames):
+            raise ValueError("duplicate group CSV requires left,right columns")
+        for row_number, row in enumerate(reader, start=2):
+            left_value = (row.get("left") or "").strip()
+            right_value = (row.get("right") or "").strip()
+            if not left_value or not right_value:
+                raise ValueError(f"duplicate group CSV row {row_number} has an empty stem")
+            left = Path(left_value).stem
+            right = Path(right_value).stem
+            if left == right:
+                raise ValueError(f"duplicate group CSV row {row_number} is a self-pair: {left}")
+            missing = sorted({left, right} - available_stems)
+            if missing:
+                raise ValueError(
+                    f"duplicate group CSV row {row_number} has unknown stems: {missing}"
+                )
+            pair = tuple(sorted((left, right)))
+            if pair in pairs:
+                raise ValueError(f"duplicate group CSV row {row_number} repeats pair: {pair}")
+            pairs.add(pair)
+    return tuple(sorted(pairs))
+
+
+def _merge_duplicate_groups(
+    audit: DatasetAudit,
+    pairs: tuple[tuple[str, str], ...],
+) -> DatasetAudit:
+    if not pairs:
+        return audit
+    records_by_stem = {record.stem: record for record in audit.records}
+    parent = {record.group_id: record.group_id for record in audit.records}
+
+    def find(group_id: str) -> str:
+        while parent[group_id] != group_id:
+            parent[group_id] = parent[parent[group_id]]
+            group_id = parent[group_id]
+        return group_id
+
+    def union(left: str, right: str) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root == right_root:
+            return
+        canonical, merged = sorted((left_root, right_root))
+        parent[merged] = canonical
+
+    for left_stem, right_stem in pairs:
+        union(records_by_stem[left_stem].group_id, records_by_stem[right_stem].group_id)
+
+    merged_records = tuple(
+        replace(record, group_id=find(record.group_id)) for record in audit.records
+    )
+    return replace(
+        audit,
+        source_groups=len({record.group_id for record in merged_records}),
+        records=merged_records,
     )
 
 
@@ -663,6 +920,7 @@ def _select_validation_groups(
     group_classes: Mapping[str, set[int]],
     val_ratio: float,
     seed: int,
+    initial_selected: frozenset[str] | set[str] = frozenset(),
 ) -> frozenset[str]:
     class_group_counts: dict[int, int] = {}
     for class_id in range(25):
@@ -687,7 +945,10 @@ def _select_validation_groups(
     }
     failed_states: set[frozenset[str]] = set()
     stack: list[_ValidationSearchFrame] = []
-    selected = frozenset[str]()
+    selected = frozenset(initial_selected)
+    unknown_groups = selected - group_classes.keys()
+    if unknown_groups:
+        raise ValueError(f"required validation groups do not exist: {sorted(unknown_groups)}")
 
     while True:
         if selected not in failed_states:
@@ -772,6 +1033,7 @@ def _select_split(
     audit: DatasetAudit,
     val_ratio: float,
     seed: int,
+    required_val_stems: frozenset[str] | set[str] = frozenset(),
 ) -> tuple[tuple[ImageRecord, ...], tuple[ImageRecord, ...]]:
     records_by_group: dict[str, list[ImageRecord]] = {}
     class_groups = {class_id: set() for class_id in range(25)}
@@ -790,16 +1052,24 @@ def _select_split(
             for class_id in group_classes[candidate]
         )
 
+    records_by_stem = {record.stem: record for record in audit.records}
+    required_stems = frozenset(required_val_stems)
+    missing_required = sorted(required_stems - records_by_stem.keys())
+    if missing_required:
+        raise ValueError(f"required validation stems do not exist: {missing_required[:10]}")
+    frozen_val_groups = frozenset(records_by_stem[stem].group_id for stem in required_stems)
+
     val_groups = set(
         _select_validation_groups(
             class_groups,
             group_classes,
             val_ratio,
             seed,
+            frozen_val_groups,
         )
     )
 
-    target_val_images = round(len(audit.records) * val_ratio)
+    target_val_images = math.ceil(len(audit.records) * val_ratio)
     val_images = sum(len(records_by_group[group_id]) for group_id in val_groups)
     remaining_groups = sorted(
         records_by_group.keys() - val_groups,
@@ -811,6 +1081,16 @@ def _select_split(
         if preserves_train_groups(group_id, val_groups):
             val_groups.add(group_id)
             val_images += len(records_by_group[group_id])
+    if val_images < target_val_images:
+        raise ValueError(
+            "validation image target cannot be met while preserving at least one "
+            f"train source group for every class: target={target_val_images}, actual={val_images}"
+        )
+    largest_group_size = max(len(group_records) for group_records in records_by_group.values())
+    max_val_images = max(
+        val_images,
+        target_val_images + largest_group_size - 1,
+    )
     val_groups = set(
         optimize_validation_groups(
             audit.records,
@@ -819,6 +1099,9 @@ def _select_split(
             val_ratio,
             seed,
             _stable_rank,
+            frozen_selected=frozen_val_groups,
+            min_val_images=target_val_images,
+            max_val_images=max_val_images,
         )
     )
 
@@ -841,6 +1124,12 @@ def _select_split(
         raise ValueError("train and val stems overlap")
     if not train_groups.isdisjoint(selected_val_groups):
         raise ValueError("train and val source groups overlap")
+    if not required_stems.issubset(val_stems):
+        raise ValueError("required validation stems were moved out of validation")
+    if len(val_records) < target_val_images:
+        raise ValueError("validation image count is below the requested minimum ratio")
+    if len(val_records) > max_val_images:
+        raise ValueError("validation image count exceeds the permitted group overshoot")
     return train_records, val_records
 
 
@@ -926,12 +1215,16 @@ def _analysis_report(
     val_ratio: float,
     seed: int,
     link_mode_counts: Mapping[str, int],
+    metadata: _PreparationMetadata,
 ) -> dict[str, object]:
     source_counts = {class_id: audit.targets.get(class_id, 0) for class_id in range(25)}
     train_counts = _class_counts(train_records)
     val_counts = _class_counts(val_records)
     train_groups = {record.group_id for record in train_records}
     val_groups = {record.group_id for record in val_records}
+    val_stems = {record.stem for record in val_records}
+    reviewed_core = metadata.reviewed_core_stems
+    added_val = val_stems - reviewed_core
     return {
         "source": {
             "images": audit.images,
@@ -940,6 +1233,8 @@ def _analysis_report(
             "dimensions": dict(audit.dimensions),
             "modes": dict(audit.modes),
             "source_groups": audit.source_groups,
+            "raw_source_groups": metadata.raw_source_groups or audit.source_groups,
+            "effective_source_groups": audit.source_groups,
             "near_duplicate_candidates": list(audit.near_duplicate_candidates),
         },
         "split": {
@@ -958,7 +1253,16 @@ def _analysis_report(
             "group_overlap": len(train_groups & val_groups),
         },
         "val_ratio": val_ratio,
+        "minimum_val_images": math.ceil(audit.images * val_ratio),
+        "actual_val_ratio": len(val_records) / audit.images,
         "seed": seed,
+        "reviewed": {
+            "archive_sha256": metadata.reviewed_archive_sha256,
+            "core_images": len(reviewed_core),
+            "targets": metadata.reviewed_target_count,
+            "added_val_images": len(added_val),
+        },
+        "accepted_duplicate_unions": [list(pair) for pair in metadata.duplicate_group_pairs],
         "link_mode_counts": {
             mode: link_mode_counts.get(mode, 0) for mode in ("hardlink", "symlink", "copy")
         },
@@ -972,8 +1276,10 @@ def _analysis_markdown(report: Mapping[str, object]) -> str:
     assert isinstance(split, Mapping)
     train = split["train"]
     val = split["val"]
+    reviewed = report["reviewed"]
     assert isinstance(train, Mapping)
     assert isinstance(val, Mapping)
+    assert isinstance(reviewed, Mapping)
     target_counts = {"train": train["targets"], "val": val["targets"]}
     coarse_counts = {
         "train": train["coarse_counts"],
@@ -992,7 +1298,11 @@ def _analysis_markdown(report: Mapping[str, object]) -> str:
         f"- Train images: {train['images']}\n"
         f"- Validation images: {val['images']}\n"
         f"- Group overlap: {split['group_overlap']}\n"
-        f"- Validation ratio: {report['val_ratio']}\n"
+        f"- Requested validation ratio: {report['val_ratio']}\n"
+        f"- Actual validation ratio: {report['actual_val_ratio']}\n"
+        f"- Minimum validation images: {report['minimum_val_images']}\n"
+        f"- Reviewed validation core: {reviewed['core_images']}\n"
+        f"- Added validation images: {reviewed['added_val_images']}\n"
         f"- Seed: {report['seed']}\n\n"
         "## Dimensions\n\n"
         f"```json\n{json.dumps(source['dimensions'], indent=2)}\n```\n\n"
@@ -1020,6 +1330,9 @@ def _metadata_paths(output_root: Path) -> tuple[Path, ...]:
     return (
         manifests_dir / "train.txt",
         manifests_dir / "val.txt",
+        manifests_dir / "val-reviewed-core.txt",
+        manifests_dir / "val-added.txt",
+        manifests_dir / "near-duplicate-unions.csv",
         manifests_dir / "source-groups.json",
         manifests_dir / "train-image-map.json",
         manifests_dir / "val-image-map.json",
@@ -1077,7 +1390,9 @@ def _validate_materialized_dataset(
     root: Path,
     train_records: tuple[ImageRecord, ...],
     val_records: tuple[ImageRecord, ...],
+    metadata: _PreparationMetadata | None = None,
 ) -> None:
+    metadata = metadata or _PreparationMetadata()
     _validate_output_tree_paths(root)
     expected = {
         "train": {record.stem for record in train_records},
@@ -1100,6 +1415,30 @@ def _validate_materialized_dataset(
         }
         if manifest_stems != expected[split]:
             raise ValueError(f"materialized {split} manifest stems are inconsistent")
+
+    reviewed_core = {
+        Path(line).stem
+        for line in (root / "manifests" / "val-reviewed-core.txt")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip()
+    }
+    added_val = {
+        Path(line).stem
+        for line in (root / "manifests" / "val-added.txt").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    }
+    if reviewed_core != set(metadata.reviewed_core_stems):
+        raise ValueError("materialized reviewed validation manifest is inconsistent")
+    if reviewed_core & added_val or reviewed_core | added_val != expected["val"]:
+        raise ValueError("materialized added validation manifest is inconsistent")
+
+    duplicate_pairs = _read_duplicate_group_pairs(
+        root / "manifests" / "near-duplicate-unions.csv",
+        expected["train"] | expected["val"],
+    )
+    if duplicate_pairs != metadata.duplicate_group_pairs:
+        raise ValueError("materialized duplicate group manifest is inconsistent")
 
     source_groups = json.loads(
         (root / "manifests" / "source-groups.json").read_text(encoding="utf-8")
@@ -1151,6 +1490,7 @@ def _materialize_locked_stage(
     val_ratio: float,
     seed: int,
     transaction_id: str,
+    metadata: _PreparationMetadata,
 ) -> None:
     demo_samples = _demo_samples(val_records)
     train_image_map = {
@@ -1177,12 +1517,27 @@ def _materialize_locked_stage(
             _assert_no_reparse_points(image_destination.parent)
             link_mode_counts[_link_or_copy(record.image_path, image_destination)] += 1
             _assert_no_reparse_points(label_destination.parent)
-            link_mode_counts[_link_or_copy(record.label_path, label_destination)] += 1
+            if record.stem in metadata.reviewed_core_stems:
+                shutil.copy2(record.label_path, label_destination)
+                link_mode_counts["copy"] += 1
+            else:
+                link_mode_counts[_link_or_copy(record.label_path, label_destination)] += 1
 
     sorted_train = sorted(record.stem for record in train_records)
     sorted_val = sorted(record.stem for record in val_records)
     train_manifest = "".join(f"{_relative_image_path('train', stem)}\n" for stem in sorted_train)
     val_manifest = "".join(f"{_relative_image_path('val', stem)}\n" for stem in sorted_val)
+    reviewed_core_manifest = "".join(
+        f"{_relative_image_path('val', stem)}\n" for stem in sorted(metadata.reviewed_core_stems)
+    )
+    added_val_manifest = "".join(
+        f"{_relative_image_path('val', stem)}\n"
+        for stem in sorted(set(sorted_val) - metadata.reviewed_core_stems)
+    )
+    duplicate_csv_stream = io.StringIO(newline="")
+    duplicate_writer = csv.writer(duplicate_csv_stream, lineterminator="\n")
+    duplicate_writer.writerow(("left", "right"))
+    duplicate_writer.writerows(metadata.duplicate_group_pairs)
     source_groups = {
         record.stem: {
             "group": record.group_id,
@@ -1208,11 +1563,23 @@ def _materialize_locked_stage(
         val_ratio,
         seed,
         link_mode_counts,
+        metadata,
     )
     manifests_dir = stage_root / "manifests"
     reports_dir = stage_root / "reports"
     _atomic_write_text(manifests_dir / "train.txt", train_manifest, stage_root)
     _atomic_write_text(manifests_dir / "val.txt", val_manifest, stage_root)
+    _atomic_write_text(
+        manifests_dir / "val-reviewed-core.txt",
+        reviewed_core_manifest,
+        stage_root,
+    )
+    _atomic_write_text(manifests_dir / "val-added.txt", added_val_manifest, stage_root)
+    _atomic_write_text(
+        manifests_dir / "near-duplicate-unions.csv",
+        duplicate_csv_stream.getvalue(),
+        stage_root,
+    )
     _atomic_write_json(manifests_dir / "source-groups.json", source_groups, stage_root)
     _atomic_write_json(manifests_dir / "train-image-map.json", train_image_map, stage_root)
     _atomic_write_json(manifests_dir / "val-image-map.json", val_image_map, stage_root)
@@ -1231,7 +1598,7 @@ def _materialize_locked_stage(
         transaction_id,
         stage_root,
     )
-    _validate_materialized_dataset(stage_root, train_records, val_records)
+    _validate_materialized_dataset(stage_root, train_records, val_records, metadata)
 
 
 def _materialize_into_stage(
@@ -1243,6 +1610,7 @@ def _materialize_into_stage(
     val_ratio: float,
     seed: int,
     transaction_id: str,
+    metadata: _PreparationMetadata,
 ) -> None:
     _create_stage_directories(stage_root)
     with _locked_directories((stage_root, *_fixed_output_directories(stage_root))):
@@ -1256,6 +1624,7 @@ def _materialize_into_stage(
             val_ratio,
             seed,
             transaction_id,
+            metadata,
         )
 
 
@@ -1327,39 +1696,22 @@ def _transaction_marker_matches(root: Path, transaction_id: str) -> bool:
         return False
 
 
-def prepare_dataset(
-    source_root: Path,
+def _prepare_audited_dataset(
+    audit: DatasetAudit,
     output_root: Path,
-    val_ratio: float = 0.15,
-    seed: int = 42,
+    val_ratio: float,
+    seed: int,
+    metadata: _PreparationMetadata,
 ) -> PreparedDataset:
-    if (
-        not isinstance(val_ratio, float)
-        or not math.isfinite(val_ratio)
-        or not 0.0 < val_ratio < 0.5
-    ):
-        raise ValueError("val_ratio must be a finite float between 0 and 0.5")
-    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
-        raise ValueError("seed must be a non-negative integer")
-
-    source_root = Path(source_root)
     output_root = Path(output_root)
-    resolved_source = source_root.resolve()
-    resolved_output = output_root.resolve()
-    if (
-        resolved_source == resolved_output
-        or resolved_source.is_relative_to(resolved_output)
-        or resolved_output.is_relative_to(resolved_source)
-    ):
-        raise ValueError(
-            "source_root and output_root overlap: "
-            f"source_root={resolved_source}, output_root={resolved_output}"
-        )
-
     _validate_existing_output_root(output_root)
     _validate_output_tree_paths(output_root)
-    audit = audit_dataset(source_root)
-    train_records, val_records = _select_split(audit, val_ratio, seed)
+    train_records, val_records = _select_split(
+        audit,
+        val_ratio,
+        seed,
+        metadata.reviewed_core_stems,
+    )
     _assert_no_reparse_points(output_root.parent)
     output_root.parent.mkdir(parents=True, exist_ok=True)
     _assert_no_reparse_points(output_root.parent)
@@ -1384,6 +1736,7 @@ def prepare_dataset(
             val_ratio,
             seed,
             transaction_id,
+            metadata,
         )
         _validate_output_tree_paths(output_root)
         _validate_existing_output_root(output_root)
@@ -1410,7 +1763,7 @@ def prepare_dataset(
         if not _transaction_marker_matches(output_root, transaction_id):
             raise RuntimeError("published output transaction marker does not match")
         marker_path.unlink()
-        _validate_materialized_dataset(output_root, train_records, val_records)
+        _validate_materialized_dataset(output_root, train_records, val_records, metadata)
         publication_validated = True
         if backup_root is not None:
             _cleanup_or_report(backup_root, "backup")
@@ -1452,4 +1805,92 @@ def prepare_dataset(
         val_groups=val_groups,
         train_class_counts=_class_counts(train_records),
         val_class_counts=_class_counts(val_records),
+        reviewed_core_stems=metadata.reviewed_core_stems,
+        added_val_stems=frozenset(sorted_val) - metadata.reviewed_core_stems,
+        duplicate_group_pairs=metadata.duplicate_group_pairs,
     )
+
+
+def prepare_dataset(
+    source_root: Path,
+    output_root: Path,
+    val_ratio: float = 0.15,
+    seed: int = 42,
+    *,
+    reviewed_archive: Path | None = None,
+    duplicate_groups_csv: Path | None = None,
+) -> PreparedDataset:
+    if (
+        not isinstance(val_ratio, float)
+        or not math.isfinite(val_ratio)
+        or not 0.0 < val_ratio < 0.5
+    ):
+        raise ValueError("val_ratio must be a finite float between 0 and 0.5")
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise ValueError("seed must be a non-negative integer")
+
+    source_root = Path(source_root)
+    output_root = Path(output_root)
+    resolved_source = source_root.resolve()
+    resolved_output = output_root.resolve()
+    if (
+        resolved_source == resolved_output
+        or resolved_source.is_relative_to(resolved_output)
+        or resolved_output.is_relative_to(resolved_source)
+    ):
+        raise ValueError(
+            "source_root and output_root overlap: "
+            f"source_root={resolved_source}, output_root={resolved_output}"
+        )
+    for input_path, name in (
+        (reviewed_archive, "reviewed_archive"),
+        (duplicate_groups_csv, "duplicate_groups_csv"),
+    ):
+        if input_path is None:
+            continue
+        resolved_input = Path(input_path).resolve()
+        if resolved_input == resolved_output or resolved_input.is_relative_to(resolved_output):
+            raise ValueError(f"{name} must be outside output_root: {input_path}")
+
+    _validate_existing_output_root(output_root)
+    _validate_output_tree_paths(output_root)
+    _assert_no_reparse_points(output_root.parent)
+    output_root.parent.mkdir(parents=True, exist_ok=True)
+    _assert_no_reparse_points(output_root.parent)
+
+    temporary_root: Path | None = None
+    reviewed = _ReviewedArchive(frozenset(), {}, "", 0)
+    try:
+        if reviewed_archive is not None:
+            temporary_root = Path(
+                mkdtemp(prefix=f".{output_root.name}.reviewed-", dir=output_root.parent)
+            )
+            reviewed = _load_reviewed_archive(
+                source_root,
+                Path(reviewed_archive),
+                temporary_root,
+            )
+        audit = audit_dataset(source_root, label_overrides=reviewed.label_overrides)
+        raw_source_groups = audit.source_groups
+        duplicate_pairs = _read_duplicate_group_pairs(
+            Path(duplicate_groups_csv) if duplicate_groups_csv is not None else None,
+            {record.stem for record in audit.records},
+        )
+        audit = _merge_duplicate_groups(audit, duplicate_pairs)
+        metadata = _PreparationMetadata(
+            reviewed_core_stems=reviewed.core_stems,
+            reviewed_archive_sha256=reviewed.sha256 or None,
+            reviewed_target_count=reviewed.target_count,
+            duplicate_group_pairs=duplicate_pairs,
+            raw_source_groups=raw_source_groups,
+        )
+        return _prepare_audited_dataset(
+            audit,
+            output_root,
+            val_ratio,
+            seed,
+            metadata,
+        )
+    finally:
+        if temporary_root is not None and os.path.lexists(temporary_root):
+            _cleanup_or_report(temporary_root, "reviewed archive extraction")
